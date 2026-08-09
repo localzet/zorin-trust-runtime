@@ -1,3 +1,9 @@
+
+## v0.3.1 / Runtime 5.0.1
+- Fix ART `VerifyError` in the generated `TrustService` DEX: DEX 35c invoke argument-count/G nibbles were reversed.
+- Add a build-time regression test for every generated invoke form.
+- Keep headless trusted-host reconnects UI-free.
+- Document release-signing continuity and recovery from the broken 5.0 prototype.
 # Changelog
 
 ## 0.2.2

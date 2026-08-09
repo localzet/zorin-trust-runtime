@@ -160,7 +160,9 @@ def ins_invoke(op: int, method_idx: int, regs: list[int]) -> list[int]:
     assert len(regs) <= 5 and method_idx < 65536
     rr = regs + [0] * (5 - len(regs))
     c, d, e, f, g = rr[:5]
-    first = op | (len(regs) << 8) | ((g & 0xF) << 12)
+    # DEX format 35c packs G in bits 8..11 and A (argument count) in bits 12..15.
+    # v0.3 accidentally swapped these fields, so ART decoded every invoke as A=0.
+    first = op | ((g & 0xF) << 8) | (len(regs) << 12)
     third = (c & 0xF) | ((d & 0xF) << 4) | ((e & 0xF) << 8) | ((f & 0xF) << 12)
     return [first, method_idx, third]
 
@@ -170,6 +172,7 @@ def code_item(registers: int, ins: int, outs: int, units: list[int]) -> bytes:
 
 
 def build(out_path: Path) -> None:
+    validate_invoke_encoder()
     # ---- fixed-size ID sections ----
     string_ids_off = HEADER_SIZE
     type_ids_off = string_ids_off + 4 * len(STRINGS)
@@ -327,6 +330,29 @@ def build(out_path: Path) -> None:
     out_path.write_bytes(dex)
     validate(out_path)
     print(f"wrote {out_path} ({len(dex)} bytes), strings={len(STRINGS)} methods={len(METHODS)}")
+
+
+def validate_invoke_encoder() -> None:
+    # Catch the exact v0.3 regression: in format 35c the argument count lives
+    # in the HIGH nibble of the first code unit, while G lives in bits 8..11.
+    cases = [
+        (0x71, 7, [0]),
+        (0x71, 7, [0, 1]),
+        (0x70, 7, [3]),
+        (0x6F, 7, [2]),
+        (0x71, 7, [0, 1, 2, 3, 4]),
+    ]
+    for op, midx, regs in cases:
+        units = ins_invoke(op, midx, regs)
+        first = units[0]
+        decoded_op = first & 0xFF
+        decoded_g = (first >> 8) & 0xF
+        decoded_count = (first >> 12) & 0xF
+        if decoded_op != op or decoded_count != len(regs):
+            raise SystemExit(f"DEX 35c invoke encoding regression: op={op:#x} regs={regs} first={first:#06x}")
+        expected_g = regs[4] if len(regs) == 5 else 0
+        if decoded_g != expected_g:
+            raise SystemExit(f"DEX 35c G-register encoding regression: regs={regs} got G={decoded_g}")
 
 
 def validate(path: Path) -> None:
