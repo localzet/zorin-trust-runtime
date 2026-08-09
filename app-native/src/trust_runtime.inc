@@ -1,5 +1,6 @@
-// ---- Zorin Trust Runtime v0.2.2: persistent device trust + user-presence gated proofs ----
-// Uses Android Keystore through JNI while keeping the APK dex-free.
+// ---- Zorin Trust Runtime v0.3: foreground TrustService + visual trust channel ----
+// Uses Android Keystore through JNI. A tiny DEX lifecycle shim hosts the long-lived Service;
+// all trust protocol, cryptography, policy and visual-channel logic remains native.
 // The device identity is an EC P-256 key intentionally usable while the screen is locked so
 // cryptographic DEVICE TRUST survives lock. Sensitive owner proofs are still denied while locked.
 // Private key material is never exported.
@@ -181,7 +182,7 @@ static void* trust_worker(void* arg){
         if(g_trust_forget_requested){trust_pref_put("trusted_host_pub","");trust_pref_put("trusted_host_name","");g_trust_forget_requested=0;g_trust_approve_requested=0;g_trust_host_pub_pending[0]=0;snprintf(g_trust_host_name,sizeof(g_trust_host_name),"<NONE>");snprintf(g_trust_host_fp,sizeof(g_trust_host_fp),"<NONE>");snprintf(g_trust_policy,sizeof(g_trust_policy),"none");trust_set_status(0,"HOST FORGOTTEN");}
         if(g_trust_state==1&&g_trust_approve_requested&&g_trust_host_pub_pending[0]){trust_pref_put("trusted_host_pub",g_trust_host_pub_pending);trust_pref_put("trusted_host_name",g_trust_host_name);g_trust_approve_requested=0;trust_set_status(0,"HOST APPROVED - AUTHENTICATING");}
         int rc=trust_auth_session();(void)rc;for(int i=0;i<20&&g_running;++i){if(g_trust_approve_requested||g_trust_forget_requested)break;usleep(100000);}
-    }return 0;
+    }g_trust_thread_started=0;return 0;
 }
 
 static void trust_start_worker(void){if(g_trust_thread_started)return;g_trust_thread_started=1;pthread_t t;if(pthread_create(&t,0,trust_worker,0)==0)pthread_detach(t);else{g_trust_thread_started=0;trust_set_status(-1,"TRUST THREAD FAILED");}}

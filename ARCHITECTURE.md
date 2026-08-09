@@ -1,41 +1,42 @@
 # Architecture
 
 ```text
-                         ZORIN TRUST RUNTIME
+                          ZORIN TRUST RUNTIME
 
-       phone APK                    owner workstation
-  +-------------------+           +---------------------+
-  | NativeActivity    |  ADB USB  | Zorin Host Agent    |
-  | no classes.dex    |<--------->| host identity       |
-  | Android Keystore  | reverse   | session hooks       |
-  | Trust UI          |           +---------------------+
-  | Observer          |
-  +---------+---------+
-            |
-            | localhost token auth
-            v
-  +-------------------+
-  | ADB Shell Core    |
-  | uid=2000          |
-  | read-only probes  |
-  +-------------------+
+          phone APK                         owner workstation
+  +--------------------------+            +---------------------+
+  | NativeActivity (UI only) |            | Zorin Host Agent    |
+  | TrustService (tiny DEX)  |<---------->| host identity       |
+  | native trust core        |  ADB USB   | session + policy    |
+  | Android Keystore         |  reverse   | visual trigger      |
+  | red Trust Visual Channel |            +---------------------+
+  | Observer                 |
+  +------------+-------------+
+               |
+               | localhost token auth
+               v
+  +--------------------------+
+  | optional ADB Shell Core  |
+  | uid=2000 / diagnostics   |
+  +--------------------------+
 
 Future custom AOSP:
 
-  +-------------------+
-  | Zorin Device Core |
-  | Rust + AIDL       |
-  | KeyMint           |
-  | USB Gadget HAL    |
-  | NCM/FIDO/vendor   |
-  +-------------------+
+  +--------------------------+
+  | Zorin Device Core        |
+  | Rust + AIDL + SELinux    |
+  | KeyMint                  |
+  | USB Gadget/NCM/FIDO      |
+  | SystemUI visual channel  |
+  +--------------------------+
 ```
 
 ## Trust boundaries
 
-1. **APP** — ordinary `untrusted_app`; Android Keystore phone identity and UI approval.
-2. **SHELL** — authorized ADB UID 2000 read-only observer backend.
-3. **SYSTEM** — optional AOSP Device Core with dedicated SELinux domain and hardware-backed identity provider.
-4. **HOST** — owner workstation agent with a pinned host identity.
+1. **APP** — ordinary `untrusted_app`; UI and stock Keystore-backed identity.
+2. **SERVICE** — same app UID, but independent foreground-service lifecycle. It does not gain extra Android privileges; it gains persistence.
+3. **SHELL** — authorized ADB UID 2000 diagnostic/bootstrap backend.
+4. **SYSTEM** — optional AOSP Device Core with dedicated SELinux domain and hardware-backed identity provider.
+5. **HOST** — owner workstation agent with a pinned host identity.
 
-The host agent does not inherit shell capabilities. ADB is transport/bootstrap in stock mode; the trust decision is still a fresh mutual cryptographic proof.
+ADB is transport/bootstrap in stock mode. The owner decision still requires fresh cryptographic proof from both phone and host keys.

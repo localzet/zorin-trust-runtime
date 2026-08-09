@@ -37,9 +37,10 @@ for ABI in "${!TARGETS[@]}"; do
   cp "$BUILD/lib/$ABI/libzorin_native_core.so" "$BUILD/apkroot/lib/$ABI/"
 done
 python3 "$HERE/tools/build_manifest.py" "$BUILD/apkroot/AndroidManifest.xml"
+python3 "$HERE/tools/build_dex.py" "$BUILD/apkroot/classes.dex"
 (
   cd "$BUILD/apkroot"
-  zip -q -r "$BUILD/zorin-native-core-unsigned.apk" AndroidManifest.xml lib
+  zip -q -r "$BUILD/zorin-native-core-unsigned.apk" AndroidManifest.xml classes.dex lib
 )
 
 # Sign with APK Signature Scheme v2. The local Python signer follows the AOSP v2
@@ -52,13 +53,13 @@ if [[ ! -f "$KEY" || ! -f "$CERT" ]]; then
 fi
 python3 "$HERE/tools/apk_v2.py" sign \
   "$BUILD/zorin-native-core-unsigned.apk" \
-  "$BUILD/zorin-trust-runtime-v4.2.apk" \
+  "$BUILD/zorin-trust-runtime-v5.0.apk" \
   --key "$KEY" --cert "$CERT"
 
 # If official Android Build Tools are installed, also verify with apksigner.
 if command -v apksigner >/dev/null 2>&1; then
-  apksigner verify --verbose --print-certs "$BUILD/zorin-trust-runtime-v4.2.apk"
+  apksigner verify --verbose --print-certs "$BUILD/zorin-trust-runtime-v5.0.apk"
 fi
 
-python3 "$HERE/tools/apk_v2.py" verify "$BUILD/zorin-trust-runtime-v4.2.apk"
-sha256sum "$BUILD/zorin-trust-runtime-v4.2.apk"
+python3 "$HERE/tools/apk_v2.py" verify "$BUILD/zorin-trust-runtime-v5.0.apk"
+sha256sum "$BUILD/zorin-trust-runtime-v5.0.apk"

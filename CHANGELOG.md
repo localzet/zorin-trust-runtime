@@ -19,3 +19,10 @@
 - Added bounded ZOWNER/1 owner-proof signing while the phone is connected and unlocked.
 - TRUST UI shows host identity backend, proof broker status/count and last proof purpose.
 - Preserved no-DEX NativeActivity architecture and Observer diagnostics.
+
+## v0.3.0
+- Replaced Activity-owned trust lifetime with a foreground `TrustService` (`START_STICKY`, `stopWithTask=false`).
+- Added a 1.1 KiB generated DEX containing only the Service lifecycle shim; native-first runtime remains in `libzorin_native_core.so`.
+- Added the stock `Trust Visual Channel`: a red owner-trust overlay pulse after successful mutual authentication.
+- Known-host ADB reconnects now bootstrap `TrustService` headlessly instead of opening `NativeActivity`.
+- Added in-app overlay permission/test controls and stock-to-SystemUI migration docs.
