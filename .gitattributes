@@ -1,0 +1,9 @@
+* text=auto eol=lf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.sh text eol=lf
+*.c text eol=lf
+*.rs text eol=lf
+*.aidl text eol=lf
+*.md text eol=lf
+*.apk binary

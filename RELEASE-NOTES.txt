@@ -1,0 +1,12 @@
+Zorin Trust Runtime v0.1 / APK 3.0.0
+
+Major change: the project now has an actual owner-workstation trust path instead of being only a system inspector.
+
+- TRUST tab with Android Keystore EC P-256 phone identity.
+- Unknown host fingerprint approval and host-key pinning.
+- Mutual signed fresh-nonce authentication with Zorin Host Agent.
+- Phone must be unlocked; disconnect revokes the live session.
+- No classes.dex; framework crypto/Keystore APIs are invoked through JNI.
+- Native Observer and authenticated ADB Shell Core v3 remain available.
+
+The companion Host Agent and AOSP Device Core are separate repositories/releases.

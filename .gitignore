@@ -1,0 +1,27 @@
+# Native/Android builds
+app-native/build/
+app-native/.local/
+bridge/build/
+*.apk
+*.apks
+*.aab
+*.so
+
+# Secrets / signing / trust state
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+*.jks
+*.token
+.env
+.env.*
+
+# Tooling
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.log
+__pycache__/
