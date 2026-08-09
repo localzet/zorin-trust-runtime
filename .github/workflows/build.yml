@@ -9,13 +9,13 @@ jobs:
       - run: ./scripts/build-all.sh
       - name: Assert tiny lifecycle DEX exists
         run: |
-          unzip -l app-native/build/zorin-trust-runtime-v5.0.1.apk | grep -q 'classes.dex'
-          test "$(unzip -p app-native/build/zorin-trust-runtime-v5.0.1.apk classes.dex | wc -c)" -lt 4096
+          unzip -l app-native/build/zorin-trust-runtime-v5.0.2.apk | grep -q 'classes.dex'
+          test "$(unzip -p app-native/build/zorin-trust-runtime-v5.0.2.apk classes.dex | wc -c)" -lt 4096
       - name: Verify local v2 signature
-        run: python3 app-native/tools/apk_v2.py verify app-native/build/zorin-trust-runtime-v5.0.1.apk
+        run: python3 app-native/tools/apk_v2.py verify app-native/build/zorin-trust-runtime-v5.0.2.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: zorin-trust-runtime-v5.0.1-local-debug
+          name: zorin-trust-runtime-v5.0.2-local-debug
           path: |
-            app-native/build/zorin-trust-runtime-v5.0.1.apk
+            app-native/build/zorin-trust-runtime-v5.0.2.apk
             bridge/build/zorin-adb-core-*

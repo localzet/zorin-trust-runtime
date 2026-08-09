@@ -53,13 +53,13 @@ if [[ ! -f "$KEY" || ! -f "$CERT" ]]; then
 fi
 python3 "$HERE/tools/apk_v2.py" sign \
   "$BUILD/zorin-native-core-unsigned.apk" \
-  "$BUILD/zorin-trust-runtime-v5.0.1.apk" \
+  "$BUILD/zorin-trust-runtime-v5.0.2.apk" \
   --key "$KEY" --cert "$CERT"
 
 # If official Android Build Tools are installed, also verify with apksigner.
 if command -v apksigner >/dev/null 2>&1; then
-  apksigner verify --verbose --print-certs "$BUILD/zorin-trust-runtime-v5.0.1.apk"
+  apksigner verify --verbose --print-certs "$BUILD/zorin-trust-runtime-v5.0.2.apk"
 fi
 
-python3 "$HERE/tools/apk_v2.py" verify "$BUILD/zorin-trust-runtime-v5.0.1.apk"
-sha256sum "$BUILD/zorin-trust-runtime-v5.0.1.apk"
+python3 "$HERE/tools/apk_v2.py" verify "$BUILD/zorin-trust-runtime-v5.0.2.apk"
+sha256sum "$BUILD/zorin-trust-runtime-v5.0.2.apk"

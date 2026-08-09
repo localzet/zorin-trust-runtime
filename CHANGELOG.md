@@ -1,5 +1,12 @@
+## v0.3.2 / Runtime 5.0.2
 
-## v0.3.1 / Runtime 5.0.1
+- Fix release signing continuity after v0.3.1 was accidentally signed with the wrong certificate.
+- Keep the corrected DEX format-35c encoder and regression test.
+- Document the pinned release certificate fingerprint.
+- Provide a one-time signer-recovery installer in the Windows bundle.
+
+
+## v0.3.2 / Runtime 5.0.2
 - Fix ART `VerifyError` in the generated `TrustService` DEX: DEX 35c invoke argument-count/G nibbles were reversed.
 - Add a build-time regression test for every generated invoke form.
 - Keep headless trusted-host reconnects UI-free.
