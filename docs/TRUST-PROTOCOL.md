@@ -11,3 +11,7 @@ ZTRUST/2|OWNER_PROOF|host-fingerprint|phone-fingerprint|action-hex|resource-hex|
 ```
 
 The proof format is `ZOWNER/1`. There is no raw `SIGN(bytes)` endpoint.
+
+
+## Device trust vs user presence (v0.2.2)
+After mutual authentication the phone keeps the ZTRUST session alive while the screen is locked. Heartbeats are `POLL UNLOCKED` or `POLL LOCKED`. Host-side device trust remains valid in both states. Owner-proof requests are denied with `phone-locked` while locked.

@@ -1,8 +1,10 @@
-// ---- Zorin Trust Runtime v0.2: owner-workstation auth + bounded owner-proof broker ----
+// ---- Zorin Trust Runtime v0.2.2: persistent device trust + user-presence gated proofs ----
 // Uses Android Keystore through JNI while keeping the APK dex-free.
-// The phone identity is an EC P-256 key marked unlocked-device-required; private key material is never exported.
+// The device identity is an EC P-256 key intentionally usable while the screen is locked so
+// cryptographic DEVICE TRUST survives lock. Sensitive owner proofs are still denied while locked.
+// Private key material is never exported.
 #define ZORIN_TRUST_PORT 47472
-#define TRUST_ID_ALIAS "zorin_trust_device_identity_v1"
+#define TRUST_ID_ALIAS "zorin_trust_device_identity_v2"
 #define TRUST_PREFS "zorin_trust_runtime"
 
 static volatile int g_trust_state = 0; // 0 offline, 1 pending approval, 2 authenticating, 3 trusted, -1 error
@@ -33,40 +35,42 @@ static int trust_hexval(char c){if(c>='0'&&c<='9')return c-'0';if(c>='a'&&c<='f'
 static int trust_hex_decode(const char* in,uint8_t* out,int cap){if(!in||!out)return -1;int n=(int)strlen(in);if(n&1||n/2>cap)return -1;for(int i=0;i<n/2;++i){int a=trust_hexval(in[i*2]),b=trust_hexval(in[i*2+1]);if(a<0||b<0)return -1;out[i]=(uint8_t)((a<<4)|b);}return n/2;}
 
 static int trust_attach(JNIEnv** out_env,int* out_attached){
-    if(!g_activity||!g_activity->vm)return -1;JavaVM* vm=g_activity->vm;JNIEnv* env=0;int attached=0;
+    JavaVM* vm=g_vm?g_vm:(g_activity?g_activity->vm:0);if(!vm)return -1;JNIEnv* env=0;int attached=0;
     if((*vm)->GetEnv(vm,(void**)&env,JNI_VERSION_1_6)!=JNI_OK){if((*vm)->AttachCurrentThread(vm,(void**)&env,0)!=JNI_OK||!env)return -2;attached=1;}
     *out_env=env;if(out_attached)*out_attached=attached;return 0;
 }
-static void trust_detach(int attached){if(attached&&g_activity&&g_activity->vm)(*g_activity->vm)->DetachCurrentThread(g_activity->vm);}
+static void trust_detach(int attached){JavaVM* vm=g_vm?g_vm:(g_activity?g_activity->vm:0);if(attached&&vm)(*vm)->DetachCurrentThread(vm);}
 static int trust_jni_exception(JNIEnv* env){if((*env)->ExceptionCheck(env)){(*env)->ExceptionClear(env);return 1;}return 0;}
 
 static int trust_pref_get(const char* key,char* out,int cap){
-    if(!key||!out||cap<2||!g_activity||!g_activity->clazz)return -1;out[0]=0;JNIEnv* env=0;int attached=0;if(trust_attach(&env,&attached)!=0)return -2;int rc=-3;
-    jclass ac=(*env)->GetObjectClass(env,g_activity->clazz);jmethodID gp=ac?(*env)->GetMethodID(env,ac,"getSharedPreferences","(Ljava/lang/String;I)Landroid/content/SharedPreferences;"):0;
-    jstring pn=(*env)->NewStringUTF(env,TRUST_PREFS);jobject prefs=(gp&&pn)?(*env)->CallObjectMethod(env,g_activity->clazz,gp,pn,0):0;jclass pc=prefs?(*env)->GetObjectClass(env,prefs):0;
+    jobject ctx=runtime_context();if(!key||!out||cap<2||!ctx)return -1;out[0]=0;JNIEnv* env=0;int attached=0;if(trust_attach(&env,&attached)!=0)return -2;int rc=-3;
+    jclass ac=(*env)->GetObjectClass(env,ctx);jmethodID gp=ac?(*env)->GetMethodID(env,ac,"getSharedPreferences","(Ljava/lang/String;I)Landroid/content/SharedPreferences;"):0;
+    jstring pn=(*env)->NewStringUTF(env,TRUST_PREFS);jobject prefs=(gp&&pn)?(*env)->CallObjectMethod(env,ctx,gp,pn,0):0;jclass pc=prefs?(*env)->GetObjectClass(env,prefs):0;
     jmethodID gs=pc?(*env)->GetMethodID(env,pc,"getString","(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"):0;jstring jk=(*env)->NewStringUTF(env,key);jstring v=(gs&&jk)?(jstring)(*env)->CallObjectMethod(env,prefs,gs,jk,0):0;
     if(v){const char* s=(*env)->GetStringUTFChars(env,v,0);if(s){int i=0;while(s[i]&&i<cap-1){out[i]=s[i];++i;}out[i]=0;(*env)->ReleaseStringUTFChars(env,v,s);rc=i;}}
     if(trust_jni_exception(env))rc=-4;if(v)(*env)->DeleteLocalRef(env,v);if(jk)(*env)->DeleteLocalRef(env,jk);if(pc)(*env)->DeleteLocalRef(env,pc);if(prefs)(*env)->DeleteLocalRef(env,prefs);if(pn)(*env)->DeleteLocalRef(env,pn);if(ac)(*env)->DeleteLocalRef(env,ac);trust_detach(attached);return rc;
 }
 static int trust_pref_put(const char* key,const char* value){
-    if(!key||!g_activity||!g_activity->clazz)return -1;JNIEnv* env=0;int attached=0;if(trust_attach(&env,&attached)!=0)return -2;int rc=-3;
-    jclass ac=(*env)->GetObjectClass(env,g_activity->clazz);jmethodID gp=ac?(*env)->GetMethodID(env,ac,"getSharedPreferences","(Ljava/lang/String;I)Landroid/content/SharedPreferences;"):0;
-    jstring pn=(*env)->NewStringUTF(env,TRUST_PREFS);jobject prefs=(gp&&pn)?(*env)->CallObjectMethod(env,g_activity->clazz,gp,pn,0):0;jclass pc=prefs?(*env)->GetObjectClass(env,prefs):0;
+    jobject ctx=runtime_context();if(!key||!ctx)return -1;JNIEnv* env=0;int attached=0;if(trust_attach(&env,&attached)!=0)return -2;int rc=-3;
+    jclass ac=(*env)->GetObjectClass(env,ctx);jmethodID gp=ac?(*env)->GetMethodID(env,ac,"getSharedPreferences","(Ljava/lang/String;I)Landroid/content/SharedPreferences;"):0;
+    jstring pn=(*env)->NewStringUTF(env,TRUST_PREFS);jobject prefs=(gp&&pn)?(*env)->CallObjectMethod(env,ctx,gp,pn,0):0;jclass pc=prefs?(*env)->GetObjectClass(env,prefs):0;
     jmethodID em=pc?(*env)->GetMethodID(env,pc,"edit","()Landroid/content/SharedPreferences$Editor;"):0;jobject ed=em?(*env)->CallObjectMethod(env,prefs,em):0;jclass ec=ed?(*env)->GetObjectClass(env,ed):0;
     jmethodID ps=ec?(*env)->GetMethodID(env,ec,"putString","(Ljava/lang/String;Ljava/lang/String;)Landroid/content/SharedPreferences$Editor;"):0;jmethodID ap=ec?(*env)->GetMethodID(env,ec,"apply","()V"):0;
     jstring jk=(*env)->NewStringUTF(env,key);jstring jv=(*env)->NewStringUTF(env,value?value:"");if(ps&&ap&&ed&&jk&&jv){jobject e2=(*env)->CallObjectMethod(env,ed,ps,jk,jv);(*env)->CallVoidMethod(env,ed,ap);if(e2)(*env)->DeleteLocalRef(env,e2);rc=0;}
     if(trust_jni_exception(env))rc=-4;if(jv)(*env)->DeleteLocalRef(env,jv);if(jk)(*env)->DeleteLocalRef(env,jk);if(ec)(*env)->DeleteLocalRef(env,ec);if(ed)(*env)->DeleteLocalRef(env,ed);if(pc)(*env)->DeleteLocalRef(env,pc);if(prefs)(*env)->DeleteLocalRef(env,prefs);if(pn)(*env)->DeleteLocalRef(env,pn);if(ac)(*env)->DeleteLocalRef(env,ac);trust_detach(attached);return rc;
 }
 
-static int trust_intent_autoconnect(void){
-    if(!g_activity||!g_activity->clazz)return 0;JNIEnv* env=0;int attached=0;if(trust_attach(&env,&attached)!=0)return 0;int yes=0;
-    jclass ac=(*env)->GetObjectClass(env,g_activity->clazz);jmethodID gi=ac?(*env)->GetMethodID(env,ac,"getIntent","()Landroid/content/Intent;"):0;jobject intent=gi?(*env)->CallObjectMethod(env,g_activity->clazz,gi):0;jclass ic=intent?(*env)->GetObjectClass(env,intent):0;jmethodID gb=ic?(*env)->GetMethodID(env,ic,"getBooleanExtra","(Ljava/lang/String;Z)Z"):0;jstring key=(*env)->NewStringUTF(env,"dev.zorin.trust.autoconnect");if(gb&&key&&intent)yes=(*env)->CallBooleanMethod(env,intent,gb,key,JNI_FALSE)?1:0;
+static int trust_intent_bool(const char* extra){
+    if(!extra||!g_activity||!g_activity->clazz)return 0;JNIEnv* env=0;int attached=0;if(trust_attach(&env,&attached)!=0)return 0;int yes=0;
+    jclass ac=(*env)->GetObjectClass(env,g_activity->clazz);jmethodID gi=ac?(*env)->GetMethodID(env,ac,"getIntent","()Landroid/content/Intent;"):0;jobject intent=gi?(*env)->CallObjectMethod(env,g_activity->clazz,gi):0;jclass ic=intent?(*env)->GetObjectClass(env,intent):0;jmethodID gb=ic?(*env)->GetMethodID(env,ic,"getBooleanExtra","(Ljava/lang/String;Z)Z"):0;jstring key=(*env)->NewStringUTF(env,extra);if(gb&&key&&intent)yes=(*env)->CallBooleanMethod(env,intent,gb,key,JNI_FALSE)?1:0;
     if(trust_jni_exception(env))yes=0;if(key)(*env)->DeleteLocalRef(env,key);if(ic)(*env)->DeleteLocalRef(env,ic);if(intent)(*env)->DeleteLocalRef(env,intent);if(ac)(*env)->DeleteLocalRef(env,ac);trust_detach(attached);return yes;
 }
+static int trust_intent_autoconnect(void){return trust_intent_bool("dev.zorin.trust.autoconnect");}
+static int trust_intent_headless(void){return trust_intent_bool("dev.zorin.trust.headless");}
 
 static int trust_device_locked(void){
-    if(!g_activity||!g_activity->clazz)return 1;JNIEnv* env=0;int attached=0;if(trust_attach(&env,&attached)!=0)return 1;int locked=1;
-    jclass ac=(*env)->GetObjectClass(env,g_activity->clazz);jmethodID gs=ac?(*env)->GetMethodID(env,ac,"getSystemService","(Ljava/lang/String;)Ljava/lang/Object;"):0;jstring name=(*env)->NewStringUTF(env,"keyguard");jobject kg=(gs&&name)?(*env)->CallObjectMethod(env,g_activity->clazz,gs,name):0;jclass kc=kg?(*env)->GetObjectClass(env,kg):0;jmethodID idl=kc?(*env)->GetMethodID(env,kc,"isDeviceLocked","()Z"):0;if(idl)locked=(*env)->CallBooleanMethod(env,kg,idl)?1:0;
+    jobject ctx=runtime_context();if(!ctx)return 1;JNIEnv* env=0;int attached=0;if(trust_attach(&env,&attached)!=0)return 1;int locked=1;
+    jclass ac=(*env)->GetObjectClass(env,ctx);jmethodID gs=ac?(*env)->GetMethodID(env,ac,"getSystemService","(Ljava/lang/String;)Ljava/lang/Object;"):0;jstring name=(*env)->NewStringUTF(env,"keyguard");jobject kg=(gs&&name)?(*env)->CallObjectMethod(env,ctx,gs,name):0;jclass kc=kg?(*env)->GetObjectClass(env,kg):0;jmethodID idl=kc?(*env)->GetMethodID(env,kc,"isDeviceLocked","()Z"):0;if(idl)locked=(*env)->CallBooleanMethod(env,kg,idl)?1:0;
     if(trust_jni_exception(env))locked=1;if(kc)(*env)->DeleteLocalRef(env,kc);if(kg)(*env)->DeleteLocalRef(env,kg);if(name)(*env)->DeleteLocalRef(env,name);if(ac)(*env)->DeleteLocalRef(env,ac);trust_detach(attached);return locked;
 }
 
@@ -95,7 +99,6 @@ static int trust_ensure_identity(void){
         jclass bc=(*env)->FindClass(env,"android/security/keystore/KeyGenParameterSpec$Builder");jmethodID ctor=bc?(*env)->GetMethodID(env,bc,"<init>","(Ljava/lang/String;I)V"):0;jobject b=(ctor&&alias)?(*env)->NewObject(env,bc,ctor,alias,12):0;
         jclass sc=(*env)->FindClass(env,"java/lang/String");jobjectArray digs=sc?(*env)->NewObjectArray(env,1,sc,0):0;jstring sha=(*env)->NewStringUTF(env,"SHA-256");if(digs&&sha)(*env)->SetObjectArrayElement(env,digs,0,sha);jmethodID sd=bc?(*env)->GetMethodID(env,bc,"setDigests","([Ljava/lang/String;)Landroid/security/keystore/KeyGenParameterSpec$Builder;"):0;if(sd&&b&&digs){jobject r=(*env)->CallObjectMethod(env,b,sd,digs);if(r)(*env)->DeleteLocalRef(env,r);}
         jclass ecs=(*env)->FindClass(env,"java/security/spec/ECGenParameterSpec");jmethodID ector=ecs?(*env)->GetMethodID(env,ecs,"<init>","(Ljava/lang/String;)V"):0;jstring curve=(*env)->NewStringUTF(env,"secp256r1");jobject espec=(ector&&curve)?(*env)->NewObject(env,ecs,ector,curve):0;jmethodID sap=bc?(*env)->GetMethodID(env,bc,"setAlgorithmParameterSpec","(Ljava/security/spec/AlgorithmParameterSpec;)Landroid/security/keystore/KeyGenParameterSpec$Builder;"):0;if(sap&&b&&espec){jobject r=(*env)->CallObjectMethod(env,b,sap,espec);if(r)(*env)->DeleteLocalRef(env,r);}
-        jmethodID sud=bc?(*env)->GetMethodID(env,bc,"setUnlockedDeviceRequired","(Z)Landroid/security/keystore/KeyGenParameterSpec$Builder;"):0;if(sud&&b){jobject r=(*env)->CallObjectMethod(env,b,sud,JNI_TRUE);if(r)(*env)->DeleteLocalRef(env,r);}
         jmethodID build=bc?(*env)->GetMethodID(env,bc,"build","()Landroid/security/keystore/KeyGenParameterSpec;"):0;jobject spec=(build&&b)?(*env)->CallObjectMethod(env,b,build):0;jclass pgoc=pg?(*env)->GetObjectClass(env,pg):0;jmethodID init=pgoc?(*env)->GetMethodID(env,pgoc,"initialize","(Ljava/security/spec/AlgorithmParameterSpec;)V"):0;jmethodID gen=pgoc?(*env)->GetMethodID(env,pgoc,"generateKeyPair","()Ljava/security/KeyPair;"):0;if(init&&gen&&pg&&spec){(*env)->CallVoidMethod(env,pg,init,spec);jobject kp=(*env)->CallObjectMethod(env,pg,gen);if(kp)(*env)->DeleteLocalRef(env,kp);}
         if(spec)(*env)->DeleteLocalRef(env,spec);if(pgoc)(*env)->DeleteLocalRef(env,pgoc);if(espec)(*env)->DeleteLocalRef(env,espec);if(curve)(*env)->DeleteLocalRef(env,curve);if(ecs)(*env)->DeleteLocalRef(env,ecs);if(sha)(*env)->DeleteLocalRef(env,sha);if(digs)(*env)->DeleteLocalRef(env,digs);if(sc)(*env)->DeleteLocalRef(env,sc);if(b)(*env)->DeleteLocalRef(env,b);if(bc)(*env)->DeleteLocalRef(env,bc);if(pg)(*env)->DeleteLocalRef(env,pg);if(provider)(*env)->DeleteLocalRef(env,provider);if(ec)(*env)->DeleteLocalRef(env,ec);if(pgc)(*env)->DeleteLocalRef(env,pgc);
         if(trust_jni_exception(env))goto done;
@@ -155,14 +158,13 @@ static int trust_auth_session(void){
     char frame[4096],hostpub[512],hostnonce[128],hostname[128],hostidentity[96];if(trust_recv_frame(fd,frame,sizeof(frame))<0){close(fd);return -3;}if(!strstr(frame,"ZTRUST/2")){close(fd);return -4;}if(trust_frame_field(frame,"HOST_PUB",hostpub,sizeof(hostpub))<0||trust_frame_field(frame,"HOST_NONCE",hostnonce,sizeof(hostnonce))<0){close(fd);return -5;}if(trust_frame_field(frame,"HOST_NAME",hostname,sizeof(hostname))<0)snprintf(hostname,sizeof(hostname),"UNKNOWN HOST");if(trust_frame_field(frame,"HOST_IDENTITY",hostidentity,sizeof(hostidentity))<0)snprintf(hostidentity,sizeof(hostidentity),"UNKNOWN");
     uint8_t hostder[256];int hostderlen=trust_hex_decode(hostpub,hostder,sizeof(hostder));char fp[128]="?";if(hostderlen<=0||trust_fingerprint_der(hostder,hostderlen,fp,sizeof(fp))<0){close(fd);return -6;}snprintf(g_trust_host_name,sizeof(g_trust_host_name),"%s",hostname);snprintf(g_trust_host_fp,sizeof(g_trust_host_fp),"%s",fp);snprintf(g_trust_host_identity,sizeof(g_trust_host_identity),"%s",hostidentity);
     char trusted[512];int tr=trust_pref_get("trusted_host_pub",trusted,sizeof(trusted));int same=(tr>0&&mini_streq(trusted,hostpub));if(!same){snprintf(g_trust_host_pub_pending,sizeof(g_trust_host_pub_pending),"%s",hostpub);trust_set_status(1,"UNKNOWN HOST - APPROVAL REQUIRED");close(fd);return 1001;}
-    if(trust_device_locked()){trust_set_status(0,"PHONE LOCKED - OWNER GATE CLOSED");close(fd);return 1002;}
     trust_set_status(2,"MUTUAL AUTHENTICATION");uint8_t phder[256];int phlen=trust_get_public_der(phder,sizeof(phder));if(phlen<=0){trust_set_status(-1,"ANDROID KEYSTORE ERROR");close(fd);return -7;}char phonepub[512];trust_hex_encode(phder,phlen,phonepub,sizeof(phonepub));trust_fingerprint_der(phder,phlen,g_trust_phone_fp,sizeof(g_trust_phone_fp));uint8_t nonce[32];if(trust_random(nonce,sizeof(nonce))<0){close(fd);return -8;}char phnonce[80];trust_hex_encode(nonce,sizeof(nonce),phnonce,sizeof(phnonce));
-    char proof[1536];snprintf(proof,sizeof(proof),"ZTRUST/2|PHONE|%s|%s|%s|%s",hostnonce,phnonce,hostpub,phonepub);uint8_t sig[160];int slen=trust_sign((const uint8_t*)proof,(int)strlen(proof),sig,sizeof(sig));if(slen<=0){trust_set_status(-1,"PHONE SIGNATURE FAILED");close(fd);return -9;}char sighex[384];trust_hex_encode(sig,slen,sighex,sizeof(sighex));char wire[2300];snprintf(wire,sizeof(wire),"PHONE_PUB %s\nPHONE_NONCE %s\nPHONE_SIG %s\nEND\n",phonepub,phnonce,sighex);if(trust_send_all(fd,wire)!=0){close(fd);return -10;}
+    char proof[1536];snprintf(proof,sizeof(proof),"ZTRUST/2|PHONE|%s|%s|%s|%s",hostnonce,phnonce,hostpub,phonepub);uint8_t sig[160];int slen=trust_sign((const uint8_t*)proof,(int)strlen(proof),sig,sizeof(sig));if(slen<=0){trust_set_status(-1,"PHONE SIGNATURE FAILED");close(fd);return -9;}char sighex[384];trust_hex_encode(sig,slen,sighex,sizeof(sighex));int initial_locked=trust_device_locked();char wire[2300];snprintf(wire,sizeof(wire),"PHONE_PUB %s\nPHONE_NONCE %s\nPHONE_SIG %s\nPHONE_STATE %s\nEND\n",phonepub,phnonce,sighex,initial_locked?"LOCKED":"UNLOCKED");if(trust_send_all(fd,wire)!=0){close(fd);return -10;}
     if(trust_recv_frame(fd,frame,sizeof(frame))<0){close(fd);return -11;}if(strstr(frame,"AUTH PAIR_REQUIRED")){trust_set_status(1,"HOST REQUIRES --PAIR-ONCE");close(fd);return 1003;}if(!strstr(frame,"AUTH OK")){trust_set_status(-1,"HOST REJECTED DEVICE");close(fd);return -12;}char hostsighex[384],policy[96];if(trust_frame_field(frame,"HOST_SIG",hostsighex,sizeof(hostsighex))<0){close(fd);return -13;}if(trust_frame_field(frame,"POLICY",policy,sizeof(policy))<0)snprintf(policy,sizeof(policy),"owner-workstation");uint8_t hostsig[192];int hslen=trust_hex_decode(hostsighex,hostsig,sizeof(hostsig));if(hslen<=0){close(fd);return -14;}char hproof[1536];snprintf(hproof,sizeof(hproof),"ZTRUST/2|HOST|%s|%s|%s|%s",phnonce,hostnonce,phonepub,hostpub);if(!trust_verify_host(hostder,hostderlen,(const uint8_t*)hproof,(int)strlen(hproof),hostsig,hslen)){trust_set_status(-1,"HOST SIGNATURE INVALID");close(fd);return -15;}
-    snprintf(g_trust_policy,sizeof(g_trust_policy),"%s",policy);trust_set_status(3,"OWNER WORKSTATION TRUSTED");
+    snprintf(g_trust_policy,sizeof(g_trust_policy),"%s",policy);trust_set_status(3,"DEVICE TRUST ESTABLISHED");
     while(g_running&&!g_trust_forget_requested){
-        if(trust_device_locked()){trust_send_all(fd,"BYE\n");trust_set_status(0,"PHONE LOCKED - SESSION REVOKED");break;}
-        if(trust_send_all(fd,"POLL\n")!=0)break;
+        int locked=trust_device_locked();
+        if(trust_send_all(fd,locked?"POLL LOCKED\n":"POLL UNLOCKED\n")!=0)break;
         char smsg[4096];int sn=trust_recv_session_message(fd,smsg,sizeof(smsg));if(sn<0)break;
         if(strstr(smsg,"PROOF_REQUEST")){
             trust_handle_proof_request(fd,smsg);
@@ -170,7 +172,7 @@ static int trust_auth_session(void){
         } else if(!strstr(smsg,"PONG")) break;
         usleep(1000000);
     }
-    close(fd);if(g_trust_state==3)trust_set_status(0,"USB TRUST SESSION LOST");return 0;
+    close(fd);if(g_trust_state==3)trust_set_status(0,"USB DEVICE TRUST LOST");return 0;
 }
 
 static void* trust_worker(void* arg){

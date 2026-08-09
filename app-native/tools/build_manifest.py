@@ -32,7 +32,7 @@ strings = [x[0] for x in RESOURCE_ATTRS] + [
     "package", "android", "http://schemas.android.com/apk/res/android",
     "manifest", "uses-sdk", "application", "activity", "meta-data",
     "intent-filter", "action", "category", "uses-permission", "android.permission.INTERNET",
-    "dev.zorin.nativelab", "3.0.0", "Zorin Trust Runtime",
+    "dev.zorin.trustruntime", "4.1.0", "Zorin Trust Runtime",
     "android.app.NativeActivity", "android.app.lib_name", "zorin_native_core",
     "android.intent.action.MAIN", "android.intent.category.LAUNCHER",
 ]
@@ -115,9 +115,9 @@ def build():
     chunks = [string_pool(), resource_map(), ns_chunk(True,1)]
     chunks += [
         start_tag('manifest', [
-            ('package', 'dev.zorin.nativelab', False, 'string'),
-            ('versionCode', 30, True, 'int'),
-            ('versionName', '3.0.0', True, 'string'),
+            ('package', 'dev.zorin.trustruntime', False, 'string'),
+            ('versionCode', 41, True, 'int'),
+            ('versionName', '4.1.0', True, 'string'),
         ], 2),
         start_tag('uses-sdk', [
             ('minSdkVersion', 29, True, 'int'),

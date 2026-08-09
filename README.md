@@ -14,3 +14,7 @@ Pure-native Android trust/runtime client. The APK intentionally contains **no `c
 - Full future backend: AOSP Device Core + KeyMint + USB Gadget/NCM/FIDO.
 
 The desktop policy engine lives in the separate `zorin-host-agent` repository; server-side proof verification lives in `zorin-access-broker`.
+
+
+### Lock-surviving trust
+From v0.2.2, a paired workstation remains cryptographically device-trusted when the phone screen locks. User-presence-gated owner proofs still require an unlocked phone.

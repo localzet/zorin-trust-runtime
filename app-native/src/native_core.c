@@ -1,4 +1,4 @@
-// Zorin Trust Runtime v0.2 / Native Lab v4.0
+// Zorin Trust Runtime v0.2.1 / Native Lab v4.1
 // Pure NativeActivity: no Java/Kotlin app classes, no classes.dex.
 // Interactive system/process/Binder/network/security/native probes rendered via ANativeWindow.
 
@@ -229,8 +229,12 @@ struct sockaddr_in {
 
 static volatile ANativeWindow* g_window = 0;
 static ANativeActivity* g_activity = 0;
+static JavaVM* g_vm = 0;
+static jobject g_app_context = 0;
 static volatile AInputQueue* g_input_queue = 0;
-static volatile int g_running = 1;
+static volatile int g_running = 1; // trust/runtime process lifetime
+static volatile int g_ui_alive = 0; // NativeActivity instance lifetime
+static volatile unsigned int g_ui_generation = 0;
 static volatile int g_selected_tab = 0;
 static volatile unsigned int g_run_counter = 1;
 static volatile int g_width = 0;
@@ -454,6 +458,37 @@ static void report_kv_line(const char* label, const char* value) {
     report_append(line);
 }
 
+static jobject runtime_context(void) {
+    if (g_app_context) return g_app_context;
+    return (g_activity && g_activity->clazz) ? g_activity->clazz : 0;
+}
+
+static int init_runtime_context(ANativeActivity* activity) {
+    if (!activity || !activity->vm || !activity->env || !activity->clazz) return -1;
+    g_vm = activity->vm;
+    if (g_app_context) return 0;
+    JNIEnv* env = activity->env;
+    jclass cls = (*env)->GetObjectClass(env, activity->clazz);
+    jmethodID mid = cls ? (*env)->GetMethodID(env, cls, "getApplicationContext", "()Landroid/content/Context;") : 0;
+    jobject ctx = mid ? (*env)->CallObjectMethod(env, activity->clazz, mid) : 0;
+    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); ctx = 0; }
+    jobject base = ctx ? ctx : activity->clazz;
+    g_app_context = (*env)->NewGlobalRef(env, base);
+    if (ctx) (*env)->DeleteLocalRef(env, ctx);
+    if (cls) (*env)->DeleteLocalRef(env, cls);
+    return g_app_context ? 0 : -2;
+}
+
+static void move_activity_to_back(ANativeActivity* activity) {
+    if (!activity || !activity->env || !activity->clazz) return;
+    JNIEnv* env = activity->env;
+    jclass cls = (*env)->GetObjectClass(env, activity->clazz);
+    jmethodID mid = cls ? (*env)->GetMethodID(env, cls, "moveTaskToBack", "(Z)Z") : 0;
+    if (mid) (void)(*env)->CallBooleanMethod(env, activity->clazz, mid, JNI_TRUE);
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    if (cls) (*env)->DeleteLocalRef(env, cls);
+}
+
 static int copy_text_to_clipboard(const char* text) {
     if (!g_activity || !g_activity->vm || !g_activity->clazz || !text) return -1;
     JNIEnv* env = 0;
@@ -542,13 +577,14 @@ static void render_trust(ANativeWindow_Buffer* b, int* y, int x, int scale) {
     kv(b,y,x,"HOST KEY",g_trust_host_identity,g_trust_state==3?1:0,scale);
     kv(b,y,x,"PHONE FP",g_trust_phone_fp,1,scale);
     kv(b,y,x,"PHONE KEY","ANDROID KEYSTORE / EC P-256 / NON-EXPORTABLE",1,scale);
-    snprintf(v,sizeof(v),"%s",trust_device_locked()?"LOCKED - DENY":"UNLOCKED - ALLOW AUTH");kv(b,y,x,"OWNER GATE",v,trust_device_locked()?-1:1,scale);
+    int locked=trust_device_locked();
+    snprintf(v,sizeof(v),"%s",locked?"LOCKED / DEVICE TRUST STAYS":"UNLOCKED / OWNER PROOFS ENABLED");kv(b,y,x,"USER PRESENCE",v,locked?0:1,scale);
     kv(b,y,x,"POLICY",g_trust_policy,g_trust_state==3?1:0,scale);
     snprintf(v,sizeof(v),"ZOWNER/1 / %u PROOFS",g_trust_proof_count);kv(b,y,x,"PROOF BROKER",v,g_trust_state==3?1:0,scale);
     kv(b,y,x,"LAST PROOF",g_trust_last_proof,g_trust_proof_count?1:0,scale);
     kv(b,y,x,"CHANNEL","ZTRUST/2 / USB ADB REVERSE / 127.0.0.1:47472",0,scale);
     int paired=trust_pref_get("trusted_host_pub",saved,sizeof(saved))>0;kv(b,y,x,"PAIRED HOST",paired?"YES":"NO",paired?1:0,scale);
-    section_note(b,y,x,"MUTUAL P-256 AUTH + BOUNDED OWNER PROOFS. PHONE PRIVATE KEY NEVER LEAVES ANDROID KEYSTORE.",scale);
+    section_note(b,y,x,"DEVICE TRUST SURVIVES SCREEN LOCK; OWNER PROOFS REQUIRE UNLOCKED PHONE. PRIVATE KEY NEVER LEAVES ANDROID KEYSTORE.",scale);
     section_note(b,y,x,"STOCK MODE NEEDS ADB + HOST AGENT; FULL BACKGROUND USB IDENTITY MOVES INTO SYSTEM DEVICE CORE.",scale);
     if(b){int gap=8,w=(b->width-x-18-gap)/2,h=28*scale;if(w<80)w=80;trust_draw_action(b,x,*y,w,h,g_trust_state==1?"APPROVE HOST":"APPROVE",g_trust_approve_rect,scale,0);trust_draw_action(b,x+w+gap,*y,w,h,"FORGET HOST",g_trust_forget_rect,scale,1);*y+=h+8;}
 }
@@ -997,7 +1033,7 @@ static void build_full_report(void) {
     int y = 0;
     report_reset();
     char h[256];
-    snprintf(h, sizeof(h), "ZORIN TRUST RUNTIME v0.2 / LAB v4.0\nSDK %d | PID %d | UID %u | RUN #%u\n", (int)g_activity->sdkVersion, getpid(), getuid(), g_run_counter);
+    snprintf(h, sizeof(h), "ZORIN TRUST RUNTIME v0.2.1 / LAB v4.1\nSDK %d | PID %d | UID %u | RUN #%u\n", (int)g_activity->sdkVersion, getpid(), getuid(), g_run_counter);
     report_append(h); report_append("========================================\n"); g_collect_report = 1;
     report_append("\n[SYSTEM]\n"); render_system(0, &y, 0, 1);
     report_append("\n[PROCESS]\n"); render_process(0, &y, 0, 1);
@@ -1057,7 +1093,7 @@ static void render(void) {
     int scale=b.width>=650?2:1; int title_scale=b.width>=650?3:2;
     int y=26;
     draw_text(&b,margin,y,"ZORIN TRUST RUNTIME",title_scale,fg);
-    char header[128]; snprintf(header,sizeof(header),"V0.2 / LAB V4 / ZTRUST2 / OWNER PROOFS / NO DEX");
+    char header[128]; snprintf(header,sizeof(header),"V0.2.2 / DEVICE TRUST / USER PRESENCE / ZTRUST2 / NO DEX");
     y += 11*title_scale; draw_text(&b,margin,y,header,scale,dim); y += 15*scale;
     fill_rect(&b,margin,y,b.width-2*margin,2,accent); y += 12;
 
@@ -1119,8 +1155,8 @@ static void handle_touch(int x,int y) {
 }
 
 static void* input_thread(void* arg) {
-    (void)arg;
-    while(g_running) {
+    unsigned int generation=(unsigned int)(unsigned long)arg;
+    while(g_running && g_ui_alive && generation==g_ui_generation) {
         AInputQueue* q=(AInputQueue*)g_input_queue;
         if(!q) { usleep(12000); continue; }
         AInputEvent* ev=0;
@@ -1147,14 +1183,25 @@ static void on_window_destroyed(ANativeActivity* a, ANativeWindow* w){(void)a;if
 static void on_focus(ANativeActivity* a,int focus){if(focus){ANativeActivity_setWindowFlags(a,FLAG_FULLSCREEN|FLAG_KEEP_SCREEN_ON|FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS,0);render();}}
 static void on_input_created(ANativeActivity* a,AInputQueue* q){(void)a;g_input_queue=q;}
 static void on_input_destroyed(ANativeActivity* a,AInputQueue* q){(void)a;if(g_input_queue==q)g_input_queue=0;}
-static void on_destroy(ANativeActivity* a){(void)a;g_running=0;g_input_queue=0;g_window=0;}
+static void on_destroy(ANativeActivity* a){
+    (void)a;
+    // The UI is disposable. Keep the trust worker and its application Context alive so
+    // swiping the task away does not revoke an otherwise valid USB owner session.
+    g_ui_alive=0; ++g_ui_generation; g_input_queue=0; g_window=0; g_activity=0;
+}
 
 __attribute__((visibility("default")))
 void ANativeActivity_onCreate(ANativeActivity* activity, void* savedState, size_t savedStateSize) {
     (void)savedState;(void)savedStateSize;
     g_activity=activity;
+    g_vm=activity->vm;
+    (void)init_runtime_context(activity);
+    int headless=trust_intent_headless();
+    // Hide an automatic trusted-host bootstrap before installing window callbacks/drawing.
+    if(headless) move_activity_to_back(activity);
     if(trust_intent_autoconnect()) g_selected_tab=2;
-    trust_start_worker(); activity->instance=activity; g_running=1; bridge_token_from_intent();
+    g_running=1; g_ui_alive=1; unsigned int ui_generation=++g_ui_generation;
+    trust_start_worker(); activity->instance=activity; bridge_token_from_intent();
     activity->callbacks->onNativeWindowCreated=on_window_created;
     activity->callbacks->onNativeWindowResized=on_window_resized;
     activity->callbacks->onNativeWindowRedrawNeeded=on_window_redraw;
@@ -1164,5 +1211,5 @@ void ANativeActivity_onCreate(ANativeActivity* activity, void* savedState, size_
     activity->callbacks->onInputQueueDestroyed=on_input_destroyed;
     activity->callbacks->onDestroy=on_destroy;
     ANativeActivity_setWindowFlags(activity,FLAG_FULLSCREEN|FLAG_KEEP_SCREEN_ON|FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS,0);
-    pthread_t t; if(pthread_create(&t,0,input_thread,0)==0) pthread_detach(t);
+    pthread_t t; if(pthread_create(&t,0,input_thread,(void*)(unsigned long)ui_generation)==0) pthread_detach(t);
 }

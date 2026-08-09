@@ -1,3 +1,7 @@
+Zorin Trust Runtime v0.2.2 / APK 4.2.0
+
+Device trust survives screen lock. Sensitive owner proofs still require the phone to be unlocked. The phone identity key alias changes to v2, so the host must enroll the phone once after upgrade.
+
 Zorin Trust Runtime v0.1 / APK 3.0.0
 
 Major change: the project now has an actual owner-workstation trust path instead of being only a system inspector.
