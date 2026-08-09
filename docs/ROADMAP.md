@@ -1,30 +1,9 @@
 # Roadmap
 
-## Milestone A — stock owner workstation (current)
-
-- Android Keystore identity from a dex-free NativeActivity.
-- Explicit host pairing and mutual challenge-response.
-- ADB USB presence tunnel and owner-session heartbeat.
-- Optional local laptop hooks on trust/untrust.
-
-## Milestone B — stronger owner workstation
-
-- Windows TPM/CNG host identity backend.
-- Fresh biometric/user-presence approval policies for sensitive actions.
-- Encrypted session channel derived from authenticated ephemeral key agreement.
-- Native desktop tray/status UI.
-
-## Milestone C — AOSP Trust Core
-
-- Rust Binder system service.
-- KeyMint/Keystore2 identity + attestation.
-- USB Gadget HAL policy controller.
-- Dedicated vendor trust channel.
-- NCM guest network function.
-
-## Milestone D — portable credential broker
-
-- Browser portal over USB NCM with no software installation on a guest computer.
-- Explicit on-phone approval per requested resource and TTL.
-- Short-lived SSH certificates/tokens instead of copying long-lived private keys.
-- FIDO2/CTAP2 USB security-key mode.
+1. Owner workstation trust + signed owner proofs — implemented in stock mode.
+2. Host TPM/CNG identity and local policy — Host Agent v0.2.
+3. Access Broker proof verification — separate repository.
+4. SSH certificate broker: short-lived SSH identities derived from owner proofs, without exporting phone private keys.
+5. AOSP Trust Core backed by KeyMint/attestation.
+6. Composite USB gadget: trusted vendor channel + NCM guest portal + FIDO/CTAP2.
+7. Zero-install guest web terminal/broker with explicit phone approval.

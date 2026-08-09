@@ -1,4 +1,4 @@
-// Zorin Trust Runtime v0.1 / Native Lab v3.0
+// Zorin Trust Runtime v0.2 / Native Lab v4.0
 // Pure NativeActivity: no Java/Kotlin app classes, no classes.dex.
 // Interactive system/process/Binder/network/security/native probes rendered via ANativeWindow.
 
@@ -539,13 +539,16 @@ static void render_trust(ANativeWindow_Buffer* b, int* y, int x, int scale) {
     kv(b,y,x,"STATUS",g_trust_status,g_trust_state==3?1:(g_trust_state<0?-1:0),scale);
     kv(b,y,x,"HOST",g_trust_host_name,g_trust_state==3?1:0,scale);
     kv(b,y,x,"HOST FP",g_trust_host_fp,g_trust_state==3?1:0,scale);
+    kv(b,y,x,"HOST KEY",g_trust_host_identity,g_trust_state==3?1:0,scale);
     kv(b,y,x,"PHONE FP",g_trust_phone_fp,1,scale);
     kv(b,y,x,"PHONE KEY","ANDROID KEYSTORE / EC P-256 / NON-EXPORTABLE",1,scale);
     snprintf(v,sizeof(v),"%s",trust_device_locked()?"LOCKED - DENY":"UNLOCKED - ALLOW AUTH");kv(b,y,x,"OWNER GATE",v,trust_device_locked()?-1:1,scale);
     kv(b,y,x,"POLICY",g_trust_policy,g_trust_state==3?1:0,scale);
-    kv(b,y,x,"CHANNEL","USB ADB REVERSE -> 127.0.0.1:47472",0,scale);
+    snprintf(v,sizeof(v),"ZOWNER/1 / %u PROOFS",g_trust_proof_count);kv(b,y,x,"PROOF BROKER",v,g_trust_state==3?1:0,scale);
+    kv(b,y,x,"LAST PROOF",g_trust_last_proof,g_trust_proof_count?1:0,scale);
+    kv(b,y,x,"CHANNEL","ZTRUST/2 / USB ADB REVERSE / 127.0.0.1:47472",0,scale);
     int paired=trust_pref_get("trusted_host_pub",saved,sizeof(saved))>0;kv(b,y,x,"PAIRED HOST",paired?"YES":"NO",paired?1:0,scale);
-    section_note(b,y,x,"MUTUAL P-256 CHALLENGE/RESPONSE. PRIVATE PHONE KEY NEVER LEAVES ANDROID KEYSTORE.",scale);
+    section_note(b,y,x,"MUTUAL P-256 AUTH + BOUNDED OWNER PROOFS. PHONE PRIVATE KEY NEVER LEAVES ANDROID KEYSTORE.",scale);
     section_note(b,y,x,"STOCK MODE NEEDS ADB + HOST AGENT; FULL BACKGROUND USB IDENTITY MOVES INTO SYSTEM DEVICE CORE.",scale);
     if(b){int gap=8,w=(b->width-x-18-gap)/2,h=28*scale;if(w<80)w=80;trust_draw_action(b,x,*y,w,h,g_trust_state==1?"APPROVE HOST":"APPROVE",g_trust_approve_rect,scale,0);trust_draw_action(b,x+w+gap,*y,w,h,"FORGET HOST",g_trust_forget_rect,scale,1);*y+=h+8;}
 }
@@ -994,7 +997,7 @@ static void build_full_report(void) {
     int y = 0;
     report_reset();
     char h[256];
-    snprintf(h, sizeof(h), "ZORIN TRUST RUNTIME v0.1 / LAB v3.0\nSDK %d | PID %d | UID %u | RUN #%u\n", (int)g_activity->sdkVersion, getpid(), getuid(), g_run_counter);
+    snprintf(h, sizeof(h), "ZORIN TRUST RUNTIME v0.2 / LAB v4.0\nSDK %d | PID %d | UID %u | RUN #%u\n", (int)g_activity->sdkVersion, getpid(), getuid(), g_run_counter);
     report_append(h); report_append("========================================\n"); g_collect_report = 1;
     report_append("\n[SYSTEM]\n"); render_system(0, &y, 0, 1);
     report_append("\n[PROCESS]\n"); render_process(0, &y, 0, 1);
@@ -1054,7 +1057,7 @@ static void render(void) {
     int scale=b.width>=650?2:1; int title_scale=b.width>=650?3:2;
     int y=26;
     draw_text(&b,margin,y,"ZORIN TRUST RUNTIME",title_scale,fg);
-    char header[128]; snprintf(header,sizeof(header),"V0.1 / LAB V3 / SHELL V3 / SYSTEM CORE / NO DEX");
+    char header[128]; snprintf(header,sizeof(header),"V0.2 / LAB V4 / ZTRUST2 / OWNER PROOFS / NO DEX");
     y += 11*title_scale; draw_text(&b,margin,y,header,scale,dim); y += 15*scale;
     fill_rect(&b,margin,y,b.width-2*margin,2,accent); y += 12;
 
@@ -1093,7 +1096,7 @@ static void render(void) {
     else if(g_selected_tab==7) render_native(&b,&cy,cx,scale);
     else render_sandbox(&b,&cy,cx,scale);
 
-    int foot=b.height-38*scale; if(foot>cy+10) draw_text(&b,cx,foot,"TRUST TAB = OWNER IDENTITY. LAB TABS REMAIN READ-ONLY DIAGNOSTICS.",scale,dim);
+    int foot=b.height-38*scale; if(foot>cy+10) draw_text(&b,cx,foot,"TRUST = OWNER IDENTITY + PROOF BROKER. LAB TABS REMAIN READ-ONLY.",scale,dim);
     ANativeWindow_unlockAndPost(win);
 }
 

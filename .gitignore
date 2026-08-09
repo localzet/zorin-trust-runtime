@@ -25,3 +25,7 @@ bridge/build/
 Thumbs.db
 *.log
 __pycache__/
+app-native/.local/
+app-native/build/
+bridge/build/
+*.apk

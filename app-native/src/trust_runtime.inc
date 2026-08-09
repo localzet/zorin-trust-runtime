@@ -1,4 +1,4 @@
-// ---- Zorin Trust Runtime v0.1: owner-workstation mutual authentication ----
+// ---- Zorin Trust Runtime v0.2: owner-workstation auth + bounded owner-proof broker ----
 // Uses Android Keystore through JNI while keeping the APK dex-free.
 // The phone identity is an EC P-256 key marked unlocked-device-required; private key material is never exported.
 #define ZORIN_TRUST_PORT 47472
@@ -11,9 +11,12 @@ static volatile int g_trust_forget_requested = 0;
 static char g_trust_status[128] = "WAITING FOR HOST AGENT";
 static char g_trust_host_name[128] = "<NONE>";
 static char g_trust_host_fp[128] = "<NONE>";
+static char g_trust_host_identity[96] = "UNKNOWN";
 static char g_trust_host_pub_pending[512];
 static char g_trust_phone_fp[128] = "INITIALIZING";
 static char g_trust_policy[96] = "none";
+static volatile unsigned int g_trust_proof_count = 0;
+static char g_trust_last_proof[128] = "NONE";
 static int g_trust_approve_rect[4];
 static int g_trust_forget_rect[4];
 static int g_trust_thread_started = 0;
@@ -128,17 +131,45 @@ static int trust_send_all(int fd,const char* s){int len=(int)strlen(s),pos=0;whi
 
 static void trust_set_status(int state,const char* status){g_trust_state=state;if(status){int i=0;while(status[i]&&i<(int)sizeof(g_trust_status)-1){g_trust_status[i]=status[i];++i;}g_trust_status[i]=0;}}
 
+static long long trust_parse_i64(const char* s){long long v=0;int neg=0;if(!s)return 0;if(*s=='-'){neg=1;++s;}while(*s>='0'&&*s<='9'){v=v*10+(*s-'0');++s;}return neg?-v:v;}
+static int trust_action_allowed(const char* a){
+    if(!a||!*a)return 0;
+    const char* p1="owner.",*p2="credential.";int i=0,ok=1;for(i=0;p1[i];++i)if(a[i]!=p1[i]){ok=0;break;}if(ok)return 1;ok=1;for(i=0;p2[i];++i)if(a[i]!=p2[i]){ok=0;break;}return ok;
+}
+static int trust_recv_session_message(int fd,char* out,int cap){int pos=0;out[0]=0;while(pos<cap-1){ssize_t n=recv(fd,out+pos,(size_t)(cap-1-pos),0);if(n<=0)return -1;pos+=(int)n;out[pos]=0;if(strstr(out,"PONG\n")||strstr(out,"PONG\r\n")||strstr(out,"\nEND\n")||strstr(out,"\r\nEND\r\n"))return pos;}return -2;}
+static int trust_handle_proof_request(int fd,const char* frame){
+    char ah[512],rh[1024],nonce[128],issueds[64],expiress[64];
+    if(trust_frame_field(frame,"ACTION_HEX",ah,sizeof(ah))<0||trust_frame_field(frame,"RESOURCE_HEX",rh,sizeof(rh))<0||trust_frame_field(frame,"NONCE",nonce,sizeof(nonce))<0||trust_frame_field(frame,"ISSUED",issueds,sizeof(issueds))<0||trust_frame_field(frame,"EXPIRES",expiress,sizeof(expiress))<0){trust_send_all(fd,"PROOF_RESULT DENY\nREASON malformed\nEND\n");return -1;}
+    uint8_t ab[256],rb[512];int an=trust_hex_decode(ah,ab,sizeof(ab)-1),rn=trust_hex_decode(rh,rb,sizeof(rb)-1);if(an<=0||rn<0){trust_send_all(fd,"PROOF_RESULT DENY\nREASON encoding\nEND\n");return -2;}ab[an]=0;rb[rn]=0;
+    if(!trust_action_allowed((const char*)ab)){trust_send_all(fd,"PROOF_RESULT DENY\nREASON action-not-allowed\nEND\n");return -3;}
+    long long issued=trust_parse_i64(issueds),expires=trust_parse_i64(expiress);struct timespec nowts;if(clock_gettime(0,&nowts)!=0){trust_send_all(fd,"PROOF_RESULT DENY\nREASON clock\nEND\n");return -4;}long long now=(long long)nowts.tv_sec;
+    if(expires<=issued||expires-issued>120||issued<now-30||issued>now+30){trust_send_all(fd,"PROOF_RESULT DENY\nREASON ttl\nEND\n");return -5;}
+    if(trust_device_locked()){trust_send_all(fd,"PROOF_RESULT DENY\nREASON phone-locked\nEND\n");return -6;}
+    char msg[2600];snprintf(msg,sizeof(msg),"ZTRUST/2|OWNER_PROOF|%s|%s|%s|%s|%s|%s|%s",g_trust_host_fp,g_trust_phone_fp,ah,rh,nonce,issueds,expiress);
+    uint8_t sig[192];int slen=trust_sign((const uint8_t*)msg,(int)strlen(msg),sig,sizeof(sig));if(slen<=0){trust_send_all(fd,"PROOF_RESULT DENY\nREASON signing\nEND\n");return -7;}char sighex[512];trust_hex_encode(sig,slen,sighex,sizeof(sighex));char wire[800];snprintf(wire,sizeof(wire),"PROOF_RESULT OK\nSIGNATURE %s\nEND\n",sighex);if(trust_send_all(fd,wire)!=0)return -8;
+    ++g_trust_proof_count;snprintf(g_trust_last_proof,sizeof(g_trust_last_proof),"%s -> %.72s",(const char*)ab,(const char*)rb);return 0;
+}
+
 static int trust_auth_session(void){
     int fd=socket(AF_INET,SOCK_STREAM,0);if(fd<0)return -1;struct sockaddr_in sa;memset(&sa,0,sizeof(sa));sa.sin_family=AF_INET;sa.sin_port=trust_net_u16((uint16_t)ZORIN_TRUST_PORT);sa.sin_addr.s_addr=0x0100007fU;if(connect(fd,&sa,(unsigned int)sizeof(sa))!=0){close(fd);return -2;}
-    char frame[4096],hostpub[512],hostnonce[128],hostname[128];if(trust_recv_frame(fd,frame,sizeof(frame))<0){close(fd);return -3;}if(!strstr(frame,"ZTRUST/1")){close(fd);return -4;}if(trust_frame_field(frame,"HOST_PUB",hostpub,sizeof(hostpub))<0||trust_frame_field(frame,"HOST_NONCE",hostnonce,sizeof(hostnonce))<0){close(fd);return -5;}if(trust_frame_field(frame,"HOST_NAME",hostname,sizeof(hostname))<0)snprintf(hostname,sizeof(hostname),"UNKNOWN HOST");
-    uint8_t hostder[256];int hostderlen=trust_hex_decode(hostpub,hostder,sizeof(hostder));char fp[128]="?";if(hostderlen<=0||trust_fingerprint_der(hostder,hostderlen,fp,sizeof(fp))<0){close(fd);return -6;}snprintf(g_trust_host_name,sizeof(g_trust_host_name),"%s",hostname);snprintf(g_trust_host_fp,sizeof(g_trust_host_fp),"%s",fp);
+    char frame[4096],hostpub[512],hostnonce[128],hostname[128],hostidentity[96];if(trust_recv_frame(fd,frame,sizeof(frame))<0){close(fd);return -3;}if(!strstr(frame,"ZTRUST/2")){close(fd);return -4;}if(trust_frame_field(frame,"HOST_PUB",hostpub,sizeof(hostpub))<0||trust_frame_field(frame,"HOST_NONCE",hostnonce,sizeof(hostnonce))<0){close(fd);return -5;}if(trust_frame_field(frame,"HOST_NAME",hostname,sizeof(hostname))<0)snprintf(hostname,sizeof(hostname),"UNKNOWN HOST");if(trust_frame_field(frame,"HOST_IDENTITY",hostidentity,sizeof(hostidentity))<0)snprintf(hostidentity,sizeof(hostidentity),"UNKNOWN");
+    uint8_t hostder[256];int hostderlen=trust_hex_decode(hostpub,hostder,sizeof(hostder));char fp[128]="?";if(hostderlen<=0||trust_fingerprint_der(hostder,hostderlen,fp,sizeof(fp))<0){close(fd);return -6;}snprintf(g_trust_host_name,sizeof(g_trust_host_name),"%s",hostname);snprintf(g_trust_host_fp,sizeof(g_trust_host_fp),"%s",fp);snprintf(g_trust_host_identity,sizeof(g_trust_host_identity),"%s",hostidentity);
     char trusted[512];int tr=trust_pref_get("trusted_host_pub",trusted,sizeof(trusted));int same=(tr>0&&mini_streq(trusted,hostpub));if(!same){snprintf(g_trust_host_pub_pending,sizeof(g_trust_host_pub_pending),"%s",hostpub);trust_set_status(1,"UNKNOWN HOST - APPROVAL REQUIRED");close(fd);return 1001;}
     if(trust_device_locked()){trust_set_status(0,"PHONE LOCKED - OWNER GATE CLOSED");close(fd);return 1002;}
     trust_set_status(2,"MUTUAL AUTHENTICATION");uint8_t phder[256];int phlen=trust_get_public_der(phder,sizeof(phder));if(phlen<=0){trust_set_status(-1,"ANDROID KEYSTORE ERROR");close(fd);return -7;}char phonepub[512];trust_hex_encode(phder,phlen,phonepub,sizeof(phonepub));trust_fingerprint_der(phder,phlen,g_trust_phone_fp,sizeof(g_trust_phone_fp));uint8_t nonce[32];if(trust_random(nonce,sizeof(nonce))<0){close(fd);return -8;}char phnonce[80];trust_hex_encode(nonce,sizeof(nonce),phnonce,sizeof(phnonce));
-    char proof[1536];snprintf(proof,sizeof(proof),"ZTRUST/1|PHONE|%s|%s|%s|%s",hostnonce,phnonce,hostpub,phonepub);uint8_t sig[160];int slen=trust_sign((const uint8_t*)proof,(int)strlen(proof),sig,sizeof(sig));if(slen<=0){trust_set_status(-1,"PHONE SIGNATURE FAILED");close(fd);return -9;}char sighex[384];trust_hex_encode(sig,slen,sighex,sizeof(sighex));char wire[2300];snprintf(wire,sizeof(wire),"PHONE_PUB %s\nPHONE_NONCE %s\nPHONE_SIG %s\nEND\n",phonepub,phnonce,sighex);if(trust_send_all(fd,wire)!=0){close(fd);return -10;}
-    if(trust_recv_frame(fd,frame,sizeof(frame))<0){close(fd);return -11;}if(strstr(frame,"AUTH PAIR_REQUIRED")){trust_set_status(1,"HOST REQUIRES --PAIR-ONCE");close(fd);return 1003;}if(!strstr(frame,"AUTH OK")){trust_set_status(-1,"HOST REJECTED DEVICE");close(fd);return -12;}char hostsighex[384],policy[96];if(trust_frame_field(frame,"HOST_SIG",hostsighex,sizeof(hostsighex))<0){close(fd);return -13;}if(trust_frame_field(frame,"POLICY",policy,sizeof(policy))<0)snprintf(policy,sizeof(policy),"owner-workstation");uint8_t hostsig[192];int hslen=trust_hex_decode(hostsighex,hostsig,sizeof(hostsig));if(hslen<=0){close(fd);return -14;}char hproof[1536];snprintf(hproof,sizeof(hproof),"ZTRUST/1|HOST|%s|%s|%s|%s",phnonce,hostnonce,phonepub,hostpub);if(!trust_verify_host(hostder,hostderlen,(const uint8_t*)hproof,(int)strlen(hproof),hostsig,hslen)){trust_set_status(-1,"HOST SIGNATURE INVALID");close(fd);return -15;}
+    char proof[1536];snprintf(proof,sizeof(proof),"ZTRUST/2|PHONE|%s|%s|%s|%s",hostnonce,phnonce,hostpub,phonepub);uint8_t sig[160];int slen=trust_sign((const uint8_t*)proof,(int)strlen(proof),sig,sizeof(sig));if(slen<=0){trust_set_status(-1,"PHONE SIGNATURE FAILED");close(fd);return -9;}char sighex[384];trust_hex_encode(sig,slen,sighex,sizeof(sighex));char wire[2300];snprintf(wire,sizeof(wire),"PHONE_PUB %s\nPHONE_NONCE %s\nPHONE_SIG %s\nEND\n",phonepub,phnonce,sighex);if(trust_send_all(fd,wire)!=0){close(fd);return -10;}
+    if(trust_recv_frame(fd,frame,sizeof(frame))<0){close(fd);return -11;}if(strstr(frame,"AUTH PAIR_REQUIRED")){trust_set_status(1,"HOST REQUIRES --PAIR-ONCE");close(fd);return 1003;}if(!strstr(frame,"AUTH OK")){trust_set_status(-1,"HOST REJECTED DEVICE");close(fd);return -12;}char hostsighex[384],policy[96];if(trust_frame_field(frame,"HOST_SIG",hostsighex,sizeof(hostsighex))<0){close(fd);return -13;}if(trust_frame_field(frame,"POLICY",policy,sizeof(policy))<0)snprintf(policy,sizeof(policy),"owner-workstation");uint8_t hostsig[192];int hslen=trust_hex_decode(hostsighex,hostsig,sizeof(hostsig));if(hslen<=0){close(fd);return -14;}char hproof[1536];snprintf(hproof,sizeof(hproof),"ZTRUST/2|HOST|%s|%s|%s|%s",phnonce,hostnonce,phonepub,hostpub);if(!trust_verify_host(hostder,hostderlen,(const uint8_t*)hproof,(int)strlen(hproof),hostsig,hslen)){trust_set_status(-1,"HOST SIGNATURE INVALID");close(fd);return -15;}
     snprintf(g_trust_policy,sizeof(g_trust_policy),"%s",policy);trust_set_status(3,"OWNER WORKSTATION TRUSTED");
-    while(g_running&&!g_trust_forget_requested){if(trust_device_locked()){trust_send_all(fd,"BYE\n");trust_set_status(0,"PHONE LOCKED - SESSION REVOKED");break;}if(trust_send_all(fd,"PING\n")!=0)break;char pong[64];int pos=0;while(pos<(int)sizeof(pong)-1){ssize_t n=recv(fd,pong+pos,sizeof(pong)-1-pos,0);if(n<=0){pos=-1;break;}pos+=(int)n;pong[pos]=0;if(strstr(pong,"PONG"))break;}if(pos<0||!strstr(pong,"PONG"))break;usleep(1500000);}
+    while(g_running&&!g_trust_forget_requested){
+        if(trust_device_locked()){trust_send_all(fd,"BYE\n");trust_set_status(0,"PHONE LOCKED - SESSION REVOKED");break;}
+        if(trust_send_all(fd,"POLL\n")!=0)break;
+        char smsg[4096];int sn=trust_recv_session_message(fd,smsg,sizeof(smsg));if(sn<0)break;
+        if(strstr(smsg,"PROOF_REQUEST")){
+            trust_handle_proof_request(fd,smsg);
+            char pong[128];int pn=trust_recv_session_message(fd,pong,sizeof(pong));if(pn<0||!strstr(pong,"PONG"))break;
+        } else if(!strstr(smsg,"PONG")) break;
+        usleep(1000000);
+    }
     close(fd);if(g_trust_state==3)trust_set_status(0,"USB TRUST SESSION LOST");return 0;
 }
 
