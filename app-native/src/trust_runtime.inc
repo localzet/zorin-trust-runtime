@@ -1,4 +1,4 @@
-// ---- Zorin Trust Runtime v0.4: foreground TrustService + visual trust channel ----
+// ---- Zorin Trust Runtime v0.5: foreground TrustService + visual trust channel ----
 // Uses Android Keystore through JNI. A tiny DEX lifecycle shim hosts the long-lived Service;
 // all trust protocol, cryptography, policy and visual-channel logic remains native.
 // The device identity is an EC P-256 key intentionally usable while the screen is locked so
@@ -16,6 +16,7 @@ static char g_trust_host_name[128] = "<NONE>";
 static char g_trust_host_fp[128] = "<NONE>";
 static char g_trust_host_identity[96] = "UNKNOWN";
 static char g_trust_host_pub_pending[512];
+static char g_trust_host_pub_current[512];
 static char g_trust_phone_fp[128] = "INITIALIZING";
 static char g_trust_policy[96] = "none";
 static volatile unsigned int g_trust_proof_count = 0;
@@ -61,6 +62,24 @@ static int trust_pref_put(const char* key,const char* value){
     jmethodID ps=ec?(*env)->GetMethodID(env,ec,"putString","(Ljava/lang/String;Ljava/lang/String;)Landroid/content/SharedPreferences$Editor;"):0;jmethodID ap=ec?(*env)->GetMethodID(env,ec,"apply","()V"):0;
     jstring jk=(*env)->NewStringUTF(env,key);jstring jv=(*env)->NewStringUTF(env,value?value:"");if(ps&&ap&&ed&&jk&&jv){jobject e2=(*env)->CallObjectMethod(env,ed,ps,jk,jv);(*env)->CallVoidMethod(env,ed,ap);if(e2)(*env)->DeleteLocalRef(env,e2);rc=0;}
     if(trust_jni_exception(env))rc=-4;if(jv)(*env)->DeleteLocalRef(env,jv);if(jk)(*env)->DeleteLocalRef(env,jk);if(ec)(*env)->DeleteLocalRef(env,ec);if(ed)(*env)->DeleteLocalRef(env,ed);if(pc)(*env)->DeleteLocalRef(env,pc);if(prefs)(*env)->DeleteLocalRef(env,prefs);if(pn)(*env)->DeleteLocalRef(env,pn);if(ac)(*env)->DeleteLocalRef(env,ac);trust_detach(attached);return rc;
+}
+
+
+static int trust_host_list_contains(const char* list,const char* item){
+    if(!list||!item||!*item)return 0;int ilen=(int)strlen(item);const char* p=list;
+    while(*p){const char* q=p;while(*q&&*q!=';')++q;int n=(int)(q-p);if(n==ilen){int same=1;for(int i=0;i<n;++i)if(p[i]!=item[i]){same=0;break;}if(same)return 1;}p=*q?q+1:q;}
+    return 0;
+}
+static int trust_host_add(const char* hostpub){
+    if(!hostpub||!*hostpub)return -1;char list[4096];int n=trust_pref_get("trusted_hosts_v2",list,sizeof(list));if(n<0){list[0]=0;n=0;}if(trust_host_list_contains(list,hostpub))return 0;int hl=(int)strlen(hostpub);if(n+hl+2>=(int)sizeof(list))return -2;if(n>0){list[n++]=';';list[n]=0;}for(int i=0;i<hl;++i)list[n++]=hostpub[i];list[n]=0;return trust_pref_put("trusted_hosts_v2",list);
+}
+static int trust_host_is_trusted(const char* hostpub){
+    char list[4096];if(trust_pref_get("trusted_hosts_v2",list,sizeof(list))>0&&trust_host_list_contains(list,hostpub))return 1;
+    char legacy[512];if(trust_pref_get("trusted_host_pub",legacy,sizeof(legacy))>0&&mini_streq(legacy,hostpub)){(void)trust_host_add(hostpub);return 1;}return 0;
+}
+static int trust_host_remove(const char* hostpub){
+    if(!hostpub||!*hostpub)return -1;char list[4096],out[4096];out[0]=0;int on=0;int n=trust_pref_get("trusted_hosts_v2",list,sizeof(list));if(n>0){const char* p=list;while(*p){const char* q=p;while(*q&&*q!=';')++q;int len=(int)(q-p),same=1,hl=(int)strlen(hostpub);if(len!=hl)same=0;else for(int i=0;i<len;++i)if(p[i]!=hostpub[i]){same=0;break;}if(!same&&len>0){if(on>0)out[on++]=';';if(on+len<(int)sizeof(out)){for(int i=0;i<len;++i)out[on++]=p[i];out[on]=0;}}p=*q?q+1:q;}(void)trust_pref_put("trusted_hosts_v2",out);}
+    char legacy[512];if(trust_pref_get("trusted_host_pub",legacy,sizeof(legacy))>0&&mini_streq(legacy,hostpub))(void)trust_pref_put("trusted_host_pub","");return 0;
 }
 
 static int trust_intent_bool(const char* extra){
@@ -211,8 +230,8 @@ static int trust_handle_proof_request(int fd,const char* frame){
 static int trust_auth_session(void){
     int fd=socket(AF_INET,SOCK_STREAM,0);if(fd<0)return -1;struct sockaddr_in sa;memset(&sa,0,sizeof(sa));sa.sin_family=AF_INET;sa.sin_port=trust_net_u16((uint16_t)ZORIN_TRUST_PORT);sa.sin_addr.s_addr=0x0100007fU;if(connect(fd,&sa,(unsigned int)sizeof(sa))!=0){close(fd);return -2;}
     char frame[4096],hostpub[512],hostnonce[128],hostname[128],hostidentity[96];if(trust_recv_frame(fd,frame,sizeof(frame))<0){close(fd);return -3;}if(!strstr(frame,"ZTRUST/2")){close(fd);return -4;}if(trust_frame_field(frame,"HOST_PUB",hostpub,sizeof(hostpub))<0||trust_frame_field(frame,"HOST_NONCE",hostnonce,sizeof(hostnonce))<0){close(fd);return -5;}if(trust_frame_field(frame,"HOST_NAME",hostname,sizeof(hostname))<0)snprintf(hostname,sizeof(hostname),"UNKNOWN HOST");if(trust_frame_field(frame,"HOST_IDENTITY",hostidentity,sizeof(hostidentity))<0)snprintf(hostidentity,sizeof(hostidentity),"UNKNOWN");
-    uint8_t hostder[256];int hostderlen=trust_hex_decode(hostpub,hostder,sizeof(hostder));char fp[128]="?";if(hostderlen<=0||trust_fingerprint_der(hostder,hostderlen,fp,sizeof(fp))<0){close(fd);return -6;}snprintf(g_trust_host_name,sizeof(g_trust_host_name),"%s",hostname);snprintf(g_trust_host_fp,sizeof(g_trust_host_fp),"%s",fp);snprintf(g_trust_host_identity,sizeof(g_trust_host_identity),"%s",hostidentity);
-    char trusted[512];int tr=trust_pref_get("trusted_host_pub",trusted,sizeof(trusted));int same=(tr>0&&mini_streq(trusted,hostpub));if(!same){snprintf(g_trust_host_pub_pending,sizeof(g_trust_host_pub_pending),"%s",hostpub);trust_set_status(1,"UNKNOWN HOST - APPROVAL REQUIRED");close(fd);return 1001;}
+    uint8_t hostder[256];int hostderlen=trust_hex_decode(hostpub,hostder,sizeof(hostder));char fp[128]="?";if(hostderlen<=0||trust_fingerprint_der(hostder,hostderlen,fp,sizeof(fp))<0){close(fd);return -6;}snprintf(g_trust_host_name,sizeof(g_trust_host_name),"%s",hostname);snprintf(g_trust_host_fp,sizeof(g_trust_host_fp),"%s",fp);snprintf(g_trust_host_identity,sizeof(g_trust_host_identity),"%s",hostidentity);snprintf(g_trust_host_pub_current,sizeof(g_trust_host_pub_current),"%s",hostpub);
+    int same=trust_host_is_trusted(hostpub);if(!same){snprintf(g_trust_host_pub_pending,sizeof(g_trust_host_pub_pending),"%s",hostpub);trust_set_status(1,"UNKNOWN HOST - APPROVAL REQUIRED");close(fd);return 1001;}
     trust_set_status(2,"MUTUAL AUTHENTICATION");uint8_t phder[256];int phlen=trust_get_public_der(phder,sizeof(phder));if(phlen<=0){trust_set_status(-1,"ANDROID KEYSTORE ERROR");close(fd);return -7;}char phonepub[512];trust_hex_encode(phder,phlen,phonepub,sizeof(phonepub));trust_fingerprint_der(phder,phlen,g_trust_phone_fp,sizeof(g_trust_phone_fp));uint8_t nonce[32];if(trust_random(nonce,sizeof(nonce))<0){close(fd);return -8;}char phnonce[80];trust_hex_encode(nonce,sizeof(nonce),phnonce,sizeof(phnonce));
     char proof[1536];snprintf(proof,sizeof(proof),"ZTRUST/2|PHONE|%s|%s|%s|%s",hostnonce,phnonce,hostpub,phonepub);uint8_t sig[160];int slen=trust_sign((const uint8_t*)proof,(int)strlen(proof),sig,sizeof(sig));if(slen<=0){trust_set_status(-1,"PHONE SIGNATURE FAILED");close(fd);return -9;}char sighex[384];trust_hex_encode(sig,slen,sighex,sizeof(sighex));int initial_locked=trust_device_locked();char wire[2300];snprintf(wire,sizeof(wire),"PHONE_PUB %s\nPHONE_NONCE %s\nPHONE_SIG %s\nPHONE_STATE %s\nEND\n",phonepub,phnonce,sighex,initial_locked?"LOCKED":"UNLOCKED");if(trust_send_all(fd,wire)!=0){close(fd);return -10;}
     if(trust_recv_frame(fd,frame,sizeof(frame))<0){close(fd);return -11;}if(strstr(frame,"AUTH PAIR_REQUIRED")){trust_set_status(1,"HOST REQUIRES --PAIR-ONCE");close(fd);return 1003;}if(!strstr(frame,"AUTH OK")){trust_set_status(-1,"HOST REJECTED DEVICE");close(fd);return -12;}char hostsighex[384],policy[96];if(trust_frame_field(frame,"HOST_SIG",hostsighex,sizeof(hostsighex))<0){close(fd);return -13;}if(trust_frame_field(frame,"POLICY",policy,sizeof(policy))<0)snprintf(policy,sizeof(policy),"owner-workstation");uint8_t hostsig[192];int hslen=trust_hex_decode(hostsighex,hostsig,sizeof(hostsig));if(hslen<=0){close(fd);return -14;}char hproof[1536];snprintf(hproof,sizeof(hproof),"ZTRUST/2|HOST|%s|%s|%s|%s",phnonce,hostnonce,phonepub,hostpub);if(!trust_verify_host(hostder,hostderlen,(const uint8_t*)hproof,(int)strlen(hproof),hostsig,hslen)){trust_set_status(-1,"HOST SIGNATURE INVALID");close(fd);return -15;}
@@ -234,8 +253,8 @@ static void* trust_worker(void* arg){
     (void)arg;uint8_t phder[256];int phlen=trust_get_public_der(phder,sizeof(phder));if(phlen>0)trust_fingerprint_der(phder,phlen,g_trust_phone_fp,sizeof(g_trust_phone_fp));else snprintf(g_trust_phone_fp,sizeof(g_trust_phone_fp),"KEYSTORE ERROR");trust_ui_publish_state();
     while(g_running){
         trust_ui_consume_command();
-        if(g_trust_forget_requested){trust_pref_put("trusted_host_pub","");trust_pref_put("trusted_host_name","");g_trust_forget_requested=0;g_trust_approve_requested=0;g_trust_host_pub_pending[0]=0;snprintf(g_trust_host_name,sizeof(g_trust_host_name),"<NONE>");snprintf(g_trust_host_fp,sizeof(g_trust_host_fp),"<NONE>");snprintf(g_trust_policy,sizeof(g_trust_policy),"none");trust_set_status(0,"HOST FORGOTTEN");}
-        if(g_trust_state==1&&g_trust_approve_requested&&g_trust_host_pub_pending[0]){trust_pref_put("trusted_host_pub",g_trust_host_pub_pending);trust_pref_put("trusted_host_name",g_trust_host_name);g_trust_approve_requested=0;trust_set_status(0,"HOST APPROVED - AUTHENTICATING");}
+        if(g_trust_forget_requested){if(g_trust_host_pub_current[0])(void)trust_host_remove(g_trust_host_pub_current);g_trust_forget_requested=0;g_trust_approve_requested=0;g_trust_host_pub_pending[0]=0;g_trust_host_pub_current[0]=0;snprintf(g_trust_host_name,sizeof(g_trust_host_name),"<NONE>");snprintf(g_trust_host_fp,sizeof(g_trust_host_fp),"<NONE>");snprintf(g_trust_policy,sizeof(g_trust_policy),"none");trust_set_status(0,"WORKSTATION REVOKED");}
+        if(g_trust_state==1&&g_trust_approve_requested&&g_trust_host_pub_pending[0]){(void)trust_host_add(g_trust_host_pub_pending);snprintf(g_trust_host_pub_current,sizeof(g_trust_host_pub_current),"%s",g_trust_host_pub_pending);g_trust_approve_requested=0;trust_set_status(0,"WORKSTATION APPROVED - AUTHENTICATING");}
         int rc=trust_auth_session();(void)rc;for(int i=0;i<20&&g_running;++i){trust_ui_consume_command();if(g_trust_approve_requested||g_trust_forget_requested)break;usleep(100000);}
     }g_trust_thread_started=0;return 0;
 }

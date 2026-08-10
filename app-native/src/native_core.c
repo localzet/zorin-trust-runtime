@@ -244,6 +244,11 @@ static volatile int g_running = 1; // trust/runtime process lifetime
 static volatile int g_ui_alive = 0; // NativeActivity instance lifetime
 static volatile unsigned int g_ui_generation = 0;
 static volatile int g_selected_tab = 2;
+static volatile int g_developer_mode = 0;
+static volatile int g_product_page = 0; /* 0 Home, 1 Devices, 2 Settings */
+static int g_product_nav[3][4];
+static int g_product_title_rect[4];
+static int g_product_tap_count = 0;
 static volatile unsigned int g_run_counter = 1;
 static volatile int g_width = 0;
 static volatile int g_height = 0;
@@ -1416,6 +1421,36 @@ static void build_full_report(void) {
     report_append("\n--- END ZORIN TRUST RUNTIME DIAGNOSTICS ---\n");
 }
 
+
+static const char* product_pages[3]={"HOME","DEVICES","SETTINGS"};
+static void product_button(ANativeWindow_Buffer* b,int x,int y,int w,int h,const char* label,int rect[4],int scale,int danger){
+    uint32_t bg=danger?rgb(44,22,28):rgb(28,30,37),edge=danger?rgb(238,72,88):rgb(52,55,65),fg=danger?rgb(238,72,88):rgb(235,236,240);
+    fill_rect(b,x,y,w,h,bg);outline_rect(b,x,y,w,h,1,edge);int tw=text_width(label,scale);draw_text(b,x+(w-tw)/2,y+(h-7*scale)/2,label,scale,fg);rect[0]=x;rect[1]=y;rect[2]=w;rect[3]=h;
+}
+static void product_status_row(ANativeWindow_Buffer* b,int x,int y,int w,const char* label,const char* value,int state,int scale){
+    uint32_t dim=rgb(143,145,155),fg=rgb(238,239,242),red=rgb(238,72,88),amber=rgb(201,148,68);draw_text(b,x,y,label,scale,dim);int tw=text_width(value,scale);draw_text(b,x+w-tw,y,value,scale,state>0?red:(state==0?amber:fg));
+}
+static void render_product_home(ANativeWindow_Buffer* b,int* y,int x,int scale){
+    (void)trust_ui_sync_from_service();int trusted=g_trust_state==3,pending=g_trust_state==1,locked=trust_device_locked();uint32_t red=rgb(238,72,88),amber=rgb(201,148,68),dim=rgb(143,145,155),fg=rgb(239,240,243),panel=rgb(24,26,32),edge=rgb(40,43,52),bg=rgb(16,17,22);
+    int avail=b->width-x*2,cx=b->width/2,r=64*scale;if(r>avail/4)r=avail/4;int cy=*y+r+8*scale;draw_ring(b,cx,cy,r,8*scale,trusted?(locked?amber:red):(pending?amber:rgb(52,55,65)),bg);
+    const char* title=trusted?(locked?"DEVICE TRUSTED":"OWNER VERIFIED"):(pending?"PAIRING":"PHONE OFFLINE");int tw=text_width(title,scale+1);draw_text(b,cx-tw/2,cy-5*scale,title,scale+1,trusted?(locked?amber:red):fg);*y=cy+r+24*scale;
+    fill_rect(b,x,*y,avail,104*scale,panel);outline_rect(b,x,*y,avail,104*scale,1,edge);int py=*y+16*scale;const char* host=(g_trust_host_name[0]&&!mini_streq(g_trust_host_name,"UNKNOWN HOST"))?g_trust_host_name:"Your workstation";draw_text(b,x+16,py,host,scale+1,fg);py+=24*scale;product_status_row(b,x+16,py,avail-32,"Device trust",trusted?"Active":"Offline",trusted?1:-1,scale);py+=18*scale;product_status_row(b,x+16,py,avail-32,"Owner",trusted?(locked?"Locked":"Present"):"Unavailable",trusted?(locked?0:1):-1,scale);py+=18*scale;product_status_row(b,x+16,py,avail-32,"Sensitive actions",trusted&&!locked?"Available":"Paused",trusted&&!locked?1:0,scale);*y+=120*scale;
+    if(pending){char code[96];trust_pair_code(g_trust_host_fp,code,sizeof(code));draw_text(b,x,*y,"VERIFY ON BOTH DEVICES",scale,dim);*y+=18*scale;int cw=text_width(code,scale+1);draw_text(b,cx-cw/2,*y,code,scale+1,fg);*y+=28*scale;product_button(b,x,*y,avail,38*scale,"TRUST THIS WORKSTATION",g_trust_approve_rect,scale,0);*y+=52*scale;}
+    else if(trusted){draw_text(b,x,*y,locked?"Unlock your phone only when a sensitive action needs approval.":"Zorin Trust is active. No action is needed.",scale,dim);*y+=24*scale;}
+}
+static void render_product_devices(ANativeWindow_Buffer* b,int* y,int x,int scale){
+    (void)trust_ui_sync_from_service();int trusted=g_trust_state==3;uint32_t fg=rgb(239,240,243),dim=rgb(143,145,155),panel=rgb(24,26,32),edge=rgb(40,43,52);int avail=b->width-x*2;
+    draw_text(b,x,*y,"TRUSTED DEVICE",scale,dim);*y+=20*scale;fill_rect(b,x,*y,avail,98*scale,panel);outline_rect(b,x,*y,avail,98*scale,1,edge);int py=*y+16*scale;draw_text(b,x+16,py,g_trust_host_name[0]?g_trust_host_name:"Your workstation",scale+1,fg);py+=25*scale;draw_text(b,x+16,py,trusted?"Connected now":"Not connected",scale,trusted?rgb(238,72,88):dim);py+=18*scale;draw_text(b,x+16,py,"Paired owner workstation",scale,dim);*y+=114*scale;product_button(b,x,*y,avail,38*scale,"REVOKE WORKSTATION",g_trust_forget_rect,scale,1);*y+=52*scale;
+}
+static void render_product_settings(ANativeWindow_Buffer* b,int* y,int x,int scale){
+    uint32_t fg=rgb(239,240,243),dim=rgb(143,145,155),panel=rgb(24,26,32),edge=rgb(40,43,52),red=rgb(238,72,88);int avail=b->width-x*2;int overlay=trust_overlay_allowed();draw_text(b,x,*y,"GENERAL",scale,dim);*y+=20*scale;fill_rect(b,x,*y,avail,90*scale,panel);outline_rect(b,x,*y,avail,90*scale,1,edge);draw_text(b,x+16,*y+16*scale,"Owner link pulse",scale+1,fg);draw_text(b,x+16,*y+40*scale,overlay?"Enabled":"Permission required",scale,overlay?red:dim);*y+=104*scale;product_button(b,x,*y,avail,38*scale,overlay?"TEST TRUST PULSE":"ENABLE TRUST PULSE",g_trust_visual_rect,scale,0);*y+=58*scale;draw_text(b,x,*y,"ABOUT",scale,dim);*y+=20*scale;draw_text(b,x,*y,"Zorin Trust 0.5",scale+1,fg);g_product_title_rect[0]=x;g_product_title_rect[1]=*y-6*scale;g_product_title_rect[2]=avail;g_product_title_rect[3]=28*scale;*y+=25*scale;draw_text(b,x,*y,"Tap the version 7 times for Developer Mode.",scale,dim);*y+=20*scale;if(g_developer_mode)draw_text(b,x,*y,"Developer Mode enabled",scale,red);
+}
+static void render_product(ANativeWindow_Buffer* b){
+    int scale=b->width>=650?2:1;uint32_t bg=rgb(16,17,22),fg=rgb(242,242,245),dim=rgb(143,145,155),red=rgb(238,72,88),panel=rgb(21,23,29),edge=rgb(41,44,52);fill_rect(b,0,0,b->width,b->height,bg);int margin=b->width/18;if(margin<20)margin=20;int y=38*scale;draw_text(b,margin,y,"ZORIN TRUST",scale+1,fg);draw_text(b,margin,y+20*scale,"Owner device trust",scale,dim);y+=52*scale;
+    if(g_product_page==0)render_product_home(b,&y,margin,scale);else if(g_product_page==1)render_product_devices(b,&y,margin,scale);else render_product_settings(b,&y,margin,scale);
+    int navh=48*scale,navy=b->height-navh;fill_rect(b,0,navy,b->width,navh,panel);outline_rect(b,0,navy,b->width,navh,1,edge);int w=b->width/3;for(int i=0;i<3;++i){uint32_t c=i==g_product_page?red:dim;int tw=text_width(product_pages[i],scale);draw_text(b,i*w+(w-tw)/2,navy+(navh-7*scale)/2,product_pages[i],scale,c);g_product_nav[i][0]=i*w;g_product_nav[i][1]=navy;g_product_nav[i][2]=w;g_product_nav[i][3]=navh;}
+}
+
 static const char* tab_names[9]={"SYSTEM","PROCESS","CENTER","CORE","BINDER","NETWORK","SECURITY","NATIVE","SANDBOX"};
 
 static void draw_button(ANativeWindow_Buffer* b, int idx, int x, int y, int w, int h, int selected, int scale) {
@@ -1432,13 +1467,14 @@ static void render(void) {
     ANativeWindow_setBuffersGeometry(win,0,0,WINDOW_FORMAT_RGBA_8888);
     ANativeWindow_Buffer b; if(ANativeWindow_lock(win,&b,0)!=0) return;
     g_width=b.width; g_height=b.height;
+    if(!g_developer_mode){ render_product(&b); ANativeWindow_unlockAndPost(win); return; }
     uint32_t bg=rgb(7,12,18), panel=rgb(14,22,31), panel2=rgb(10,17,24), fg=rgb(226,234,241), dim=rgb(125,146,164), accent=rgb(238,72,88);
     fill_rect(&b,0,0,b.width,b.height,bg);
     int margin=b.width/45; if(margin<16)margin=16; if(margin>32)margin=32;
     int scale=b.width>=650?2:1; int title_scale=b.width>=650?3:2;
     int y=26;
     draw_text(&b,margin,y,"ZORIN TRUST RUNTIME",title_scale,fg);
-    char header[128]; snprintf(header,sizeof(header),"V0.4 / TRUST CENTER / OWNER LINK / ZTRUST2 / NATIVE-FIRST");
+    char header[128]; snprintf(header,sizeof(header),"V0.5 / DEVELOPER MODE / ZTRUST2 / NATIVE-FIRST");
     y += 11*title_scale; draw_text(&b,margin,y,header,scale,dim); y += 15*scale;
     fill_rect(&b,margin,y,b.width-2*margin,2,accent); y += 12;
 
@@ -1483,6 +1519,14 @@ static void render(void) {
 
 static void handle_touch(int x,int y) {
     (void)trust_ui_sync_from_service();
+    if(!g_developer_mode){
+        for(int i=0;i<3;++i)if(in_rect(x,y,g_product_nav[i])){g_product_page=i;render();return;}
+        if(g_product_page==0 && in_rect(x,y,g_trust_approve_rect)){if(g_trust_state==1)(void)trust_ui_send_command("APPROVE",g_trust_host_pub_pending);render();return;}
+        if(g_product_page==1 && in_rect(x,y,g_trust_forget_rect)){(void)trust_ui_send_command("FORGET","");render();return;}
+        if(g_product_page==2 && in_rect(x,y,g_trust_visual_rect)){if(trust_overlay_allowed())(void)trust_start_service_from_context(runtime_context(),1);else(void)trust_request_overlay_permission();render();return;}
+        if(g_product_page==2 && in_rect(x,y,g_product_title_rect)){if(++g_product_tap_count>=7){g_developer_mode=1;g_selected_tab=2;g_product_tap_count=0;}render();return;}
+        return;
+    }
     for(int i=0;i<9;++i) if(in_rect(x,y,g_tab_rects[i])) { g_selected_tab=i; ++g_run_counter; render(); return; }
     if(g_selected_tab==2 && in_rect(x,y,g_trust_approve_rect)) { if(g_trust_state==1){ if(trust_ui_send_command("APPROVE",g_trust_host_pub_pending)==0) snprintf(g_trust_status,sizeof(g_trust_status),"APPROVAL SENT TO TRUST SERVICE"); else snprintf(g_trust_status,sizeof(g_trust_status),"APPROVAL IPC FAILED"); } ++g_run_counter; render(); return; }
     if(g_selected_tab==2 && in_rect(x,y,g_trust_forget_rect)) { (void)trust_ui_send_command("FORGET",""); ++g_run_counter; render(); return; }
@@ -1505,7 +1549,7 @@ static void* trust_ui_refresh_thread(void* arg) {
     unsigned int generation=(unsigned int)(unsigned long)arg;
     while(g_running && g_ui_alive && generation==g_ui_generation) {
         int changed=trust_ui_sync_from_service();
-        if(changed>0 && g_selected_tab==2 && g_window && g_activity) render();
+        if(changed>0 && g_window && g_activity) render();
         usleep(250000);
     }
     return 0;
