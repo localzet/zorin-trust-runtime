@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.5 / Runtime 5.0.5
+
+- Fix pairing after the Runtime 5.0.4 split of `NativeActivity` and `TrustService` into separate Linux processes.
+- Add an app-private `ZTRUSTUI/1` file IPC bridge between UI and `:trust`; C globals are no longer assumed to be shared across processes.
+- Bind every UI approval command to the exact pending host public key before the service accepts it.
+- Auto-refresh the TRUST tab when the service publishes a new pending/established state.
+- Add a build-time process-IPC contract verifier.
+- Keep the 5.0.4 JNI crash fix, real `:trust` process isolation, foreground service, lock-surviving DEVICE TRUST and owner-managed Windows APK signer.
+
 ## 0.3.4 / Runtime 5.0.4
 
 - Fix native Trust Visual JNI crash (`WindowManager` jobject passed to `GetMethodID` instead of its jclass).

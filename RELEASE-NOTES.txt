@@ -1,16 +1,3 @@
-Zorin Trust Runtime 5.0.4 / suite v0.3.4
+Zorin Trust Runtime 5.0.5
 
-CRASH FIX
-- Fix the exact native SIGSEGV captured on Redmi/HyperOS in TrustService.nativeOnStart.
-- trust_visual_show() created `wmc = GetObjectClass(wm)` but accidentally called GetMethodID with `wm` (jobject) instead of `wmc` (jclass).
-- The generated ARM64 machine code is regression-checked so the addView GetMethodID receives the class reference.
-
-MANIFEST HARDENING
-- Compiled AndroidManifest attributes are emitted in stable framework resource-id order.
-- Build verification asserts TrustService android:process=":trust" and specialUse foreground-service type.
-- Real-device process separation still needs device confirmation via the included process check.
-
-SIGNING OWNERSHIP
-- Windows development bundle now signs the unsigned Runtime APK locally using a persistent owner key under LocalAppData.
-- This removes future dependence on a private signing key retained by a build/chat workspace.
-- Updating from 5.0.3 requires one final uninstall/reinstall and owner re-pair because its previous private signer is unavailable.
+Fixes pairing after the UI/service split. Runtime 5.0.4 correctly isolated TrustService in `:trust`, but the pairing screen still read and wrote process-local C globals. 5.0.5 adds an app-private cross-process state/command bridge, full-host-key-bound approval, and automatic TRUST-tab refresh. No phone identity or owner signer migration is required from 5.0.4.

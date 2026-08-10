@@ -34,18 +34,38 @@ function Get-ZorinSigningState {
     Alias='zorin-runtime-owner'
   }
 }
+function Test-ZorinPassFile([string]$Path) {
+  if(-not(Test-Path -LiteralPath $Path)){return $false}
+  try {
+    $raw=[System.IO.File]::ReadAllText($Path,[System.Text.Encoding]::ASCII)
+    return (-not [string]::IsNullOrWhiteSpace($raw))
+  } catch { return $false }
+}
 function Ensure-ZorinOwnerSigner {
   $s=Get-ZorinSigningState
   New-Item -ItemType Directory -Force -Path $s.Dir | Out-Null
-  if((Test-Path $s.KeyStore) -and (Test-Path $s.PassFile)){return $s}
+
+  $hasKey=Test-Path -LiteralPath $s.KeyStore
+  $hasPass=Test-ZorinPassFile $s.PassFile
+  if($hasKey -and $hasPass){return $s}
+
+  # Never silently replace half of an owner-managed signing identity: doing so
+  # would break APK update continuity. Ask the owner to recover it explicitly.
+  if($hasKey -xor $hasPass){
+    throw "Owner signer state is incomplete under $($s.Dir). Do not delete the surviving file; restore the missing runtime-owner.p12/runtime-owner.pass before continuing."
+  }
+
   $keytool=Get-ZorinKeytool
   $bytes=New-Object byte[] 32
   $rng=[System.Security.Cryptography.RandomNumberGenerator]::Create()
   try{$rng.GetBytes($bytes)}finally{$rng.Dispose()}
   $pw=-join ($bytes | ForEach-Object { $_.ToString('x2') })
-  Set-Content -LiteralPath $s.PassFile -Value $pw -NoNewline -Encoding ASCII
+
+  # apksigner password files are line-oriented. Keep exactly one password line.
+  [System.IO.File]::WriteAllText($s.PassFile,$pw + [Environment]::NewLine,[System.Text.Encoding]::ASCII)
   & $keytool -genkeypair -alias $s.Alias -keyalg RSA -keysize 3072 -sigalg SHA256withRSA -validity 36500 -dname 'CN=Zorin Trust Runtime Owner Signer,O=Local Owner Development' -storetype PKCS12 -keystore $s.KeyStore -storepass $pw -keypass $pw | Out-Null
   if($LASTEXITCODE-ne0){throw 'keytool failed to create owner signing key'}
+
   # Best-effort ACL hardening. Failure is not fatal because LocalAppData is already per-user.
   try {
     $who=[System.Security.Principal.WindowsIdentity]::GetCurrent().Name
@@ -60,7 +80,13 @@ function Sign-ZorinRuntime([string]$UnsignedApk,[string]$OutputApk) {
   $s=Ensure-ZorinOwnerSigner
   $apksigner=Get-ZorinApkSigner
   if(Test-Path $OutputApk){Remove-Item -Force $OutputApk}
-  & $apksigner sign --ks $s.KeyStore --ks-key-alias $s.Alias --ks-pass "file:$($s.PassFile)" --key-pass "file:$($s.PassFile)" --out $OutputApk $UnsignedApk
+
+  # IMPORTANT: do not pass the same one-line password file to both --ks-pass
+  # and --key-pass. apksigner consumes password-file entries sequentially and
+  # would try to read a second line for the key password. The generated PKCS12
+  # key uses the same password as the keystore, so omitting --key-pass makes
+  # apksigner correctly reuse the keystore password.
+  & $apksigner sign --ks $s.KeyStore --ks-key-alias $s.Alias --ks-pass "file:$($s.PassFile)" --out $OutputApk $UnsignedApk
   if($LASTEXITCODE-ne0){throw 'apksigner sign failed'}
   & $apksigner verify --verbose --print-certs $OutputApk
   if($LASTEXITCODE-ne0){throw 'apksigner verify failed'}

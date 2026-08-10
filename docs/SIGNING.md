@@ -8,6 +8,7 @@ For the Windows owner bundle, Runtime 5.0.4 moves **pre-release update signing o
 - password file: `%LOCALAPPDATA%\ZorinTrust\signing\runtime-owner.pass`
 - both are outside the Git checkout and must remain private;
 - Android SDK Build-Tools `apksigner` signs the distributed unsigned APK locally;
+- the owner PKCS#12 key uses the same password as its keystore; the bundle supplies the one-line password file only via `--ks-pass` and deliberately omits `--key-pass`;
 - future bundles reuse the same local key, preserving Android package update continuity.
 
 The 5.0.3 assistant-side signer private key was not retained outside its build workspace. Updating from that build therefore requires one final clean reinstall and phone re-pair. This migration is intentionally the last build-workspace-dependent signer transition.

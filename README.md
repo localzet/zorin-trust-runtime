@@ -2,7 +2,7 @@
 
 Native-first Android trust/runtime client. Almost the entire product lives in `libzorin_native_core.so`: NativeActivity UI, Android Keystore identity, mutual trust protocol, owner-proof broker and visual channel. Since v0.3 the APK intentionally contains one **tiny generated `classes.dex`** whose only job is to host Android's long-lived `TrustService` lifecycle; no application/business logic moved to Java/Kotlin.
 
-## v0.3.4 / Runtime 5.0.4
+## v0.3.5 / Runtime 5.0.5
 
 - `ZTRUST/2` mutual owner-workstation authentication.
 - Android Keystore EC P-256 phone identity; private key is never exported by the app.
@@ -16,6 +16,10 @@ Native-first Android trust/runtime client. Almost the entire product lives in `l
 - Full future backend: AOSP Device Core + KeyMint + USB Gadget/NCM/FIDO.
 
 The desktop policy/owner session lives in the separate `zorin-host-agent` repository; server-side credential verification/issuance belongs in `zorin-access-broker`.
+
+### UI / service process boundary
+
+Because `NativeActivity` and `TrustService` are different Linux processes, they cannot share native globals. Runtime 5.0.5 uses an app-private `ZTRUSTUI/1` state/command bridge under `Context.getFilesDir()` for pairing approval and UI status. Approval is bound to the complete pending host public key, not merely a display fingerprint.
 
 ## Why is there a DEX now?
 

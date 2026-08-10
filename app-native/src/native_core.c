@@ -124,6 +124,7 @@ extern ssize_t write(int, const void*, size_t);
 extern void _exit(int);
 extern int dup2(int, int);
 extern int execve(const char*, char* const[], char* const[]);
+extern int unlink(const char*);
 
 // Public NDK Binder API (libbinder_ndk.so, API 29+).
 extern AIBinder* AServiceManager_checkService(const char*);
@@ -147,7 +148,10 @@ extern const char* AStatus_getMessage(const AStatus*);
 extern void AStatus_delete(AStatus*);
 
 #define O_RDONLY 0
+#define O_WRONLY 1
 #define O_RDWR 2
+#define O_CREAT 0x40
+#define O_TRUNC 0x200
 #define O_CLOEXEC 0x80000
 #define F_OK 0
 #define WINDOW_FORMAT_RGBA_8888 1
@@ -231,6 +235,7 @@ static volatile ANativeWindow* g_window = 0;
 static ANativeActivity* g_activity = 0;
 static JavaVM* g_vm = 0;
 static jobject g_app_context = 0;
+static char g_files_dir[320];
 static volatile int g_trust_service_alive = 0;
 static jobject g_visual_view = 0;
 static jobject g_visual_wm = 0;
@@ -468,15 +473,33 @@ static jobject runtime_context(void) {
 
 static int init_runtime_context_from(JNIEnv* env, jobject obj) {
     if (!env || !obj) return -1;
-    if (g_app_context) return 0;
-    jclass cls = (*env)->GetObjectClass(env, obj);
-    jmethodID mid = cls ? (*env)->GetMethodID(env, cls, "getApplicationContext", "()Landroid/content/Context;") : 0;
-    jobject ctx = mid ? (*env)->CallObjectMethod(env, obj, mid) : 0;
-    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); ctx = 0; }
-    jobject base = ctx ? ctx : obj;
-    g_app_context = (*env)->NewGlobalRef(env, base);
-    if (ctx) (*env)->DeleteLocalRef(env, ctx);
-    if (cls) (*env)->DeleteLocalRef(env, cls);
+    if (!g_app_context) {
+        jclass cls = (*env)->GetObjectClass(env, obj);
+        jmethodID mid = cls ? (*env)->GetMethodID(env, cls, "getApplicationContext", "()Landroid/content/Context;") : 0;
+        jobject ctx = mid ? (*env)->CallObjectMethod(env, obj, mid) : 0;
+        if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); ctx = 0; }
+        jobject base = ctx ? ctx : obj;
+        g_app_context = (*env)->NewGlobalRef(env, base);
+        if (ctx) (*env)->DeleteLocalRef(env, ctx);
+        if (cls) (*env)->DeleteLocalRef(env, cls);
+    }
+    if (g_app_context && !g_files_dir[0]) {
+        jclass cc = (*env)->GetObjectClass(env, g_app_context);
+        jmethodID gfd = cc ? (*env)->GetMethodID(env, cc, "getFilesDir", "()Ljava/io/File;") : 0;
+        jobject f = gfd ? (*env)->CallObjectMethod(env, g_app_context, gfd) : 0;
+        jclass fc = f ? (*env)->GetObjectClass(env, f) : 0;
+        jmethodID gap = fc ? (*env)->GetMethodID(env, fc, "getAbsolutePath", "()Ljava/lang/String;") : 0;
+        jstring ps = gap ? (jstring)(*env)->CallObjectMethod(env, f, gap) : 0;
+        if (ps) {
+            const char* c = (*env)->GetStringUTFChars(env, ps, 0);
+            if (c) { snprintf(g_files_dir, sizeof(g_files_dir), "%s", c); (*env)->ReleaseStringUTFChars(env, ps, c); }
+        }
+        if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); g_files_dir[0]=0; }
+        if (ps) (*env)->DeleteLocalRef(env, ps);
+        if (fc) (*env)->DeleteLocalRef(env, fc);
+        if (f) (*env)->DeleteLocalRef(env, f);
+        if (cc) (*env)->DeleteLocalRef(env, cc);
+    }
     return g_app_context ? 0 : -2;
 }
 
@@ -802,6 +825,7 @@ JNIEXPORT void JNICALL Java_dev_zorin_trustruntime_TrustService_nativeOnCreate(J
     (void)init_runtime_context_from(env,service);
     g_running=1;g_trust_service_alive=1;
     (void)trust_start_foreground_notification(env,service);
+    trust_ui_publish_state();
     trust_start_worker();
 }
 
@@ -817,7 +841,7 @@ __attribute__((visibility("default")))
 JNIEXPORT void JNICALL Java_dev_zorin_trustruntime_TrustService_nativeOnDestroy(JNIEnv* env, jclass cls, jobject service) {
     (void)cls;(void)service;
     if(env)trust_visual_remove(env);
-    g_trust_service_alive=0;g_running=0;
+    g_trust_service_alive=0; trust_ui_publish_state(); g_running=0;
 }
 
 static int in_rect(int x, int y, const int r[4]) { return x>=r[0] && y>=r[1] && x<r[0]+r[2] && y<r[1]+r[3]; }
@@ -852,7 +876,8 @@ static void trust_draw_action(ANativeWindow_Buffer* b,int x,int y,int w,int h,co
 }
 
 static void render_trust(ANativeWindow_Buffer* b, int* y, int x, int scale) {
-    char v[256],saved[512];
+    (void)trust_ui_sync_from_service();
+    char v[256];
     const char* st = g_trust_state==3?"TRUSTED":(g_trust_state==2?"AUTHENTICATING":(g_trust_state==1?"PENDING APPROVAL":(g_trust_state<0?"ERROR":"OFFLINE")));
     kv(b,y,x,"STATE",st,g_trust_state==3?1:(g_trust_state<0?-1:0),scale);
     kv(b,y,x,"STATUS",g_trust_status,g_trust_state==3?1:(g_trust_state<0?-1:0),scale);
@@ -867,7 +892,7 @@ static void render_trust(ANativeWindow_Buffer* b, int* y, int x, int scale) {
     snprintf(v,sizeof(v),"ZOWNER/1 / %u PROOFS",g_trust_proof_count);kv(b,y,x,"PROOF BROKER",v,g_trust_state==3?1:0,scale);
     kv(b,y,x,"LAST PROOF",g_trust_last_proof,g_trust_proof_count?1:0,scale);
     kv(b,y,x,"CHANNEL","ZTRUST/2 / USB ADB REVERSE / 127.0.0.1:47472",0,scale);
-    int paired=trust_pref_get("trusted_host_pub",saved,sizeof(saved))>0;kv(b,y,x,"PAIRED HOST",paired?"YES":"NO",paired?1:0,scale);
+    int paired=g_trust_paired_hint;kv(b,y,x,"PAIRED HOST",paired?"YES":"NO",paired?1:0,scale);
     kv(b,y,x,"TRUST SERVICE",g_trust_service_alive?"FOREGROUND / ACTIVE":"STARTING / FALLBACK",g_trust_service_alive?1:0,scale);
     int overlay=trust_overlay_allowed();kv(b,y,x,"RED TRUST PULSE",overlay?"ENABLED":"NEEDS OVERLAY PERMISSION",overlay?1:0,scale);
     section_note(b,y,x,"DEVICE TRUST SURVIVES SCREEN LOCK AND UI/RECENTS; OWNER PROOFS STILL REQUIRE USER PRESENCE.",scale);
@@ -1423,9 +1448,10 @@ static void render(void) {
 }
 
 static void handle_touch(int x,int y) {
+    (void)trust_ui_sync_from_service();
     for(int i=0;i<9;++i) if(in_rect(x,y,g_tab_rects[i])) { g_selected_tab=i; ++g_run_counter; render(); return; }
-    if(g_selected_tab==2 && in_rect(x,y,g_trust_approve_rect)) { if(g_trust_state==1){g_trust_approve_requested=1;snprintf(g_trust_status,sizeof(g_trust_status),"APPROVED - RETRYING");} ++g_run_counter; render(); return; }
-    if(g_selected_tab==2 && in_rect(x,y,g_trust_forget_rect)) { g_trust_forget_requested=1; ++g_run_counter; render(); return; }
+    if(g_selected_tab==2 && in_rect(x,y,g_trust_approve_rect)) { if(g_trust_state==1){ if(trust_ui_send_command("APPROVE",g_trust_host_pub_pending)==0) snprintf(g_trust_status,sizeof(g_trust_status),"APPROVAL SENT TO TRUST SERVICE"); else snprintf(g_trust_status,sizeof(g_trust_status),"APPROVAL IPC FAILED"); } ++g_run_counter; render(); return; }
+    if(g_selected_tab==2 && in_rect(x,y,g_trust_forget_rect)) { (void)trust_ui_send_command("FORGET",""); ++g_run_counter; render(); return; }
     if(g_selected_tab==2 && in_rect(x,y,g_trust_visual_rect)) { if(trust_overlay_allowed()) (void)trust_start_service_from_context(runtime_context(),1); else (void)trust_request_overlay_permission(); ++g_run_counter; render(); return; }
     if(in_rect(x,y,g_run_rect)) { ++g_run_counter; snprintf(g_copy_status,sizeof(g_copy_status),"COPY ALL"); render(); return; }
     if(in_rect(x,y,g_copy_rect)) {
@@ -1439,6 +1465,16 @@ static void handle_touch(int x,int y) {
         render();
         return;
     }
+}
+
+static void* trust_ui_refresh_thread(void* arg) {
+    unsigned int generation=(unsigned int)(unsigned long)arg;
+    while(g_running && g_ui_alive && generation==g_ui_generation) {
+        int changed=trust_ui_sync_from_service();
+        if(changed>0 && g_selected_tab==2 && g_window && g_activity) render();
+        usleep(250000);
+    }
+    return 0;
 }
 
 static void* input_thread(void* arg) {
@@ -1502,4 +1538,5 @@ void ANativeActivity_onCreate(ANativeActivity* activity, void* savedState, size_
     activity->callbacks->onDestroy=on_destroy;
     ANativeActivity_setWindowFlags(activity,FLAG_FULLSCREEN|FLAG_KEEP_SCREEN_ON|FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS,0);
     pthread_t t; if(pthread_create(&t,0,input_thread,(void*)(unsigned long)ui_generation)==0) pthread_detach(t);
+    pthread_t rt; if(pthread_create(&rt,0,trust_ui_refresh_thread,(void*)(unsigned long)ui_generation)==0) pthread_detach(rt);
 }

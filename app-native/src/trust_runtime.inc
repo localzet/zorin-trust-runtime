@@ -19,10 +19,12 @@ static char g_trust_host_pub_pending[512];
 static char g_trust_phone_fp[128] = "INITIALIZING";
 static char g_trust_policy[96] = "none";
 static volatile unsigned int g_trust_proof_count = 0;
+static volatile int g_trust_paired_hint = 0;
 static char g_trust_last_proof[128] = "NONE";
 static int g_trust_approve_rect[4];
 static int g_trust_forget_rect[4];
 static int g_trust_thread_started = 0;
+static char g_trust_ui_last_frame[3200];
 
 static uint16_t trust_net_u16(uint16_t v) { return (uint16_t)((v << 8) | (v >> 8)); }
 
@@ -133,7 +135,59 @@ static int trust_frame_field(const char* text,const char* key,char* out,int cap)
 static int trust_recv_frame(int fd,char* out,int cap){int pos=0;out[0]=0;while(pos<cap-1){ssize_t n=recv(fd,out+pos,(size_t)(cap-1-pos),0);if(n<=0)return -1;pos+=(int)n;out[pos]=0;if(strstr(out,"\nEND\n")||strstr(out,"\r\nEND\r\n")||(pos>=4&&out[pos-4]=='E'&&out[pos-3]=='N'&&out[pos-2]=='D'))return pos;}return -2;}
 static int trust_send_all(int fd,const char* s){int len=(int)strlen(s),pos=0;while(pos<len){ssize_t n=send(fd,s+pos,(size_t)(len-pos),0);if(n<=0)return -1;pos+=(int)n;}return 0;}
 
-static void trust_set_status(int state,const char* status){g_trust_state=state;if(status){int i=0;while(status[i]&&i<(int)sizeof(g_trust_status)-1){g_trust_status[i]=status[i];++i;}g_trust_status[i]=0;}}
+// Cross-process UI <-> :trust bridge. NativeActivity and TrustService intentionally live
+// in distinct Linux processes, so C globals are NOT shared. Keep pairing approval in a
+// tiny app-private file IPC protocol instead of relying on deprecated multi-process
+// SharedPreferences semantics. Files live under Context.getFilesDir() (same UID, mode 0600).
+static int trust_ui_path(char* out,int cap,const char* leaf){if(!out||cap<8||!leaf||!g_files_dir[0])return -1;int n=snprintf(out,(size_t)cap,"%s/%s",g_files_dir,leaf);return (n>0&&n<cap)?0:-2;}
+static int trust_ui_write_file(const char* leaf,const char* data){char path[420];if(trust_ui_path(path,sizeof(path),leaf)!=0||!data)return -1;int fd=open(path,O_WRONLY|O_CREAT|O_TRUNC,0600);if(fd<0)return -2;int len=(int)strlen(data),pos=0;while(pos<len){ssize_t n=write(fd,data+pos,(size_t)(len-pos));if(n<=0){close(fd);return -3;}pos+=(int)n;}close(fd);return 0;}
+static int trust_ui_read_file(const char* leaf,char* out,int cap){char path[420];if(trust_ui_path(path,sizeof(path),leaf)!=0)return -1;return read_small(path,out,cap);}
+static int trust_ui_publish_state(void){
+    if(!g_files_dir[0])return -1;
+    char sh[260],nh[260],fph[260],ih[220],pph[260],polh[220],pendingh[1100],lph[260],wire[3400],pairedbuf[512];
+    int paired=trust_pref_get("trusted_host_pub",pairedbuf,sizeof(pairedbuf))>0;
+    trust_hex_encode((const uint8_t*)g_trust_status,(int)strlen(g_trust_status),sh,sizeof(sh));
+    trust_hex_encode((const uint8_t*)g_trust_host_name,(int)strlen(g_trust_host_name),nh,sizeof(nh));
+    trust_hex_encode((const uint8_t*)g_trust_host_fp,(int)strlen(g_trust_host_fp),fph,sizeof(fph));
+    trust_hex_encode((const uint8_t*)g_trust_host_identity,(int)strlen(g_trust_host_identity),ih,sizeof(ih));
+    trust_hex_encode((const uint8_t*)g_trust_phone_fp,(int)strlen(g_trust_phone_fp),pph,sizeof(pph));
+    trust_hex_encode((const uint8_t*)g_trust_policy,(int)strlen(g_trust_policy),polh,sizeof(polh));
+    trust_hex_encode((const uint8_t*)g_trust_host_pub_pending,(int)strlen(g_trust_host_pub_pending),pendingh,sizeof(pendingh));
+    trust_hex_encode((const uint8_t*)g_trust_last_proof,(int)strlen(g_trust_last_proof),lph,sizeof(lph));
+    snprintf(wire,sizeof(wire),"ZTRUSTUI/1\nSTATE %d\nSERVICE_ALIVE %d\nPAIRED %d\nPROOF_COUNT %u\nSTATUS_HEX %s\nHOST_NAME_HEX %s\nHOST_FP_HEX %s\nHOST_ID_HEX %s\nPHONE_FP_HEX %s\nPOLICY_HEX %s\nPENDING_HEX %s\nLAST_PROOF_HEX %s\nEND\n",g_trust_state,g_trust_service_alive?1:0,paired?1:0,g_trust_proof_count,sh,nh,fph,ih,pph,polh,pendingh,lph);
+    return trust_ui_write_file("trust-ui-state",wire);
+}
+static long long trust_ui_parse_i64(const char* s){long long v=0;int neg=0;if(!s)return 0;if(*s=='-'){neg=1;++s;}while(*s>='0'&&*s<='9'){v=v*10+(*s-'0');++s;}return neg?-v:v;}
+static int trust_ui_decode_field(const char* frame,const char* key,char* out,int cap){char hex[1200];int n=trust_frame_field(frame,key,hex,sizeof(hex));if(n<0){if(cap)out[0]=0;return -1;}int d=trust_hex_decode(hex,(uint8_t*)out,cap-1);if(d<0){out[0]=0;return -2;}out[d]=0;return d;}
+static int trust_ui_sync_from_service(void){
+    char frame[3200],v[64];int n=trust_ui_read_file("trust-ui-state",frame,sizeof(frame));if(n<=0||!strstr(frame,"ZTRUSTUI/1"))return -1;
+    int changed=!g_trust_ui_last_frame[0]||!mini_streq(g_trust_ui_last_frame,frame);
+    if(changed){int i=0;while(frame[i]&&i<(int)sizeof(g_trust_ui_last_frame)-1){g_trust_ui_last_frame[i]=frame[i];++i;}g_trust_ui_last_frame[i]=0;}
+    if(trust_frame_field(frame,"STATE",v,sizeof(v))>=0)g_trust_state=(int)trust_ui_parse_i64(v);
+    if(trust_frame_field(frame,"SERVICE_ALIVE",v,sizeof(v))>=0)g_trust_service_alive=trust_ui_parse_i64(v)?1:0;
+    if(trust_frame_field(frame,"PAIRED",v,sizeof(v))>=0)g_trust_paired_hint=trust_ui_parse_i64(v)?1:0;
+    if(trust_frame_field(frame,"PROOF_COUNT",v,sizeof(v))>=0)g_trust_proof_count=(unsigned int)trust_ui_parse_i64(v);
+    (void)trust_ui_decode_field(frame,"STATUS_HEX",g_trust_status,sizeof(g_trust_status));
+    (void)trust_ui_decode_field(frame,"HOST_NAME_HEX",g_trust_host_name,sizeof(g_trust_host_name));
+    (void)trust_ui_decode_field(frame,"HOST_FP_HEX",g_trust_host_fp,sizeof(g_trust_host_fp));
+    (void)trust_ui_decode_field(frame,"HOST_ID_HEX",g_trust_host_identity,sizeof(g_trust_host_identity));
+    (void)trust_ui_decode_field(frame,"PHONE_FP_HEX",g_trust_phone_fp,sizeof(g_trust_phone_fp));
+    (void)trust_ui_decode_field(frame,"POLICY_HEX",g_trust_policy,sizeof(g_trust_policy));
+    (void)trust_ui_decode_field(frame,"PENDING_HEX",g_trust_host_pub_pending,sizeof(g_trust_host_pub_pending));
+    (void)trust_ui_decode_field(frame,"LAST_PROOF_HEX",g_trust_last_proof,sizeof(g_trust_last_proof));
+    return changed?1:0;
+}
+static int trust_ui_send_command(const char* command,const char* binding){
+    if(!command)return -1;char wire[900];if(binding&&*binding)snprintf(wire,sizeof(wire),"ZTRUSTUI/1\nCOMMAND %s\nBINDING %s\nEND\n",command,binding);else snprintf(wire,sizeof(wire),"ZTRUSTUI/1\nCOMMAND %s\nEND\n",command);return trust_ui_write_file("trust-ui-command",wire);
+}
+static void trust_ui_consume_command(void){
+    char frame[1024],path[420],cmd[64],binding[600];int n=trust_ui_read_file("trust-ui-command",frame,sizeof(frame));if(n<=0)return;if(trust_ui_path(path,sizeof(path),"trust-ui-command")==0)(void)unlink(path);
+    if(trust_frame_field(frame,"COMMAND",cmd,sizeof(cmd))<0)return;
+    if(mini_streq(cmd,"FORGET")){g_trust_forget_requested=1;return;}
+    if(mini_streq(cmd,"APPROVE")){binding[0]=0;(void)trust_frame_field(frame,"BINDING",binding,sizeof(binding));if(g_trust_state==1&&g_trust_host_pub_pending[0]&&binding[0]&&mini_streq(binding,g_trust_host_pub_pending))g_trust_approve_requested=1;}
+}
+
+static void trust_set_status(int state,const char* status){g_trust_state=state;if(status){int i=0;while(status[i]&&i<(int)sizeof(g_trust_status)-1){g_trust_status[i]=status[i];++i;}g_trust_status[i]=0;}trust_ui_publish_state();}
 
 static long long trust_parse_i64(const char* s){long long v=0;int neg=0;if(!s)return 0;if(*s=='-'){neg=1;++s;}while(*s>='0'&&*s<='9'){v=v*10+(*s-'0');++s;}return neg?-v:v;}
 static int trust_action_allowed(const char* a){
@@ -151,7 +205,7 @@ static int trust_handle_proof_request(int fd,const char* frame){
     if(trust_device_locked()){trust_send_all(fd,"PROOF_RESULT DENY\nREASON phone-locked\nEND\n");return -6;}
     char msg[2600];snprintf(msg,sizeof(msg),"ZTRUST/2|OWNER_PROOF|%s|%s|%s|%s|%s|%s|%s",g_trust_host_fp,g_trust_phone_fp,ah,rh,nonce,issueds,expiress);
     uint8_t sig[192];int slen=trust_sign((const uint8_t*)msg,(int)strlen(msg),sig,sizeof(sig));if(slen<=0){trust_send_all(fd,"PROOF_RESULT DENY\nREASON signing\nEND\n");return -7;}char sighex[512];trust_hex_encode(sig,slen,sighex,sizeof(sighex));char wire[800];snprintf(wire,sizeof(wire),"PROOF_RESULT OK\nSIGNATURE %s\nEND\n",sighex);if(trust_send_all(fd,wire)!=0)return -8;
-    ++g_trust_proof_count;snprintf(g_trust_last_proof,sizeof(g_trust_last_proof),"%s -> %.72s",(const char*)ab,(const char*)rb);return 0;
+    ++g_trust_proof_count;snprintf(g_trust_last_proof,sizeof(g_trust_last_proof),"%s -> %.72s",(const char*)ab,(const char*)rb);trust_ui_publish_state();return 0;
 }
 
 static int trust_auth_session(void){
@@ -177,11 +231,12 @@ static int trust_auth_session(void){
 }
 
 static void* trust_worker(void* arg){
-    (void)arg;uint8_t phder[256];int phlen=trust_get_public_der(phder,sizeof(phder));if(phlen>0)trust_fingerprint_der(phder,phlen,g_trust_phone_fp,sizeof(g_trust_phone_fp));else snprintf(g_trust_phone_fp,sizeof(g_trust_phone_fp),"KEYSTORE ERROR");
+    (void)arg;uint8_t phder[256];int phlen=trust_get_public_der(phder,sizeof(phder));if(phlen>0)trust_fingerprint_der(phder,phlen,g_trust_phone_fp,sizeof(g_trust_phone_fp));else snprintf(g_trust_phone_fp,sizeof(g_trust_phone_fp),"KEYSTORE ERROR");trust_ui_publish_state();
     while(g_running){
+        trust_ui_consume_command();
         if(g_trust_forget_requested){trust_pref_put("trusted_host_pub","");trust_pref_put("trusted_host_name","");g_trust_forget_requested=0;g_trust_approve_requested=0;g_trust_host_pub_pending[0]=0;snprintf(g_trust_host_name,sizeof(g_trust_host_name),"<NONE>");snprintf(g_trust_host_fp,sizeof(g_trust_host_fp),"<NONE>");snprintf(g_trust_policy,sizeof(g_trust_policy),"none");trust_set_status(0,"HOST FORGOTTEN");}
         if(g_trust_state==1&&g_trust_approve_requested&&g_trust_host_pub_pending[0]){trust_pref_put("trusted_host_pub",g_trust_host_pub_pending);trust_pref_put("trusted_host_name",g_trust_host_name);g_trust_approve_requested=0;trust_set_status(0,"HOST APPROVED - AUTHENTICATING");}
-        int rc=trust_auth_session();(void)rc;for(int i=0;i<20&&g_running;++i){if(g_trust_approve_requested||g_trust_forget_requested)break;usleep(100000);}
+        int rc=trust_auth_session();(void)rc;for(int i=0;i<20&&g_running;++i){trust_ui_consume_command();if(g_trust_approve_requested||g_trust_forget_requested)break;usleep(100000);}
     }g_trust_thread_started=0;return 0;
 }
 
