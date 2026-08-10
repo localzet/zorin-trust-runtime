@@ -1,16 +1,20 @@
-## v0.3.2 / Runtime 5.0.2
+# Changelog
 
-- Fix release signing continuity after v0.3.1 was accidentally signed with the wrong certificate.
-- Keep the corrected DEX format-35c encoder and regression test.
-- Document the pinned release certificate fingerprint.
-- Provide a one-time signer-recovery installer in the Windows bundle.
+## 0.3.4 / Runtime 5.0.4
 
+- Fix native Trust Visual JNI crash (`WindowManager` jobject passed to `GetMethodID` instead of its jclass).
+- Sort compiled manifest framework attributes by resource ID and verify `TrustService` process metadata.
+- Add regression verifiers for JNI object/class use and manifest process configuration.
+- Add owner-managed local APK signing workflow for Windows development bundles.
 
-## v0.3.2 / Runtime 5.0.2
-- Fix ART `VerifyError` in the generated `TrustService` DEX: DEX 35c invoke argument-count/G nibbles were reversed.
-- Add a build-time regression test for every generated invoke form.
-- Keep headless trusted-host reconnects UI-free.
-- Document release-signing continuity and recovery from the broken 5.0 prototype.
+## v0.3.4 / Runtime 5.0.4
+
+- Isolate `TrustService` in the private `:trust` process so a service failure cannot kill the launcher UI process.
+- Use a stable public framework notification icon instead of OEM resource-name lookup.
+- Keep the corrected generated-DEX 35c invoke encoding and its regression test.
+- Preserve the pinned release signing certificate from Runtime 5.0.2.
+- Pair with Host Agent 0.3.4 ADB-health diagnostics and absolute-ADB-path startup.
+
 # Changelog
 
 ## 0.2.2

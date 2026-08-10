@@ -1,13 +1,15 @@
 # Signing
 
-Release signing material is **not committed**. Git/local builds create a gitignored debug key under `app-native/.local/signing/`.
+Repository builds create gitignored local debug signing material under `app-native/.local/signing/` unless explicit signing paths are supplied.
 
-Official v0.3.2+ releases in this development line are signed by certificate SHA-256:
+For the Windows owner bundle, Runtime 5.0.4 moves **pre-release update signing ownership to the owner's laptop**:
 
-```text
-d574e2ccaabacd87f5511a1f6d34ce23607564c6ee5690e3e1910e0b75797f28
-```
+- persistent key: `%LOCALAPPDATA%\ZorinTrust\signing\runtime-owner.p12`
+- password file: `%LOCALAPPDATA%\ZorinTrust\signing\runtime-owner.pass`
+- both are outside the Git checkout and must remain private;
+- Android SDK Build-Tools `apksigner` signs the distributed unsigned APK locally;
+- future bundles reuse the same local key, preserving Android package update continuity.
 
-The v0.3.0 APK was accidentally signed with a transient local key that was not retained. Because Android requires signer continuity for package updates, moving from the broken v0.3.0 build to v0.3.2 requires a one-time uninstall/reinstall and phone re-pair. Future releases must retain the certificate above.
+The 5.0.3 assistant-side signer private key was not retained outside its build workspace. Updating from that build therefore requires one final clean reinstall and phone re-pair. This migration is intentionally the last build-workspace-dependent signer transition.
 
-Never commit release private keys.
+Never commit APK signing private keys, Android Keystore identities, host identity keys, trust session tokens, or broker credentials.

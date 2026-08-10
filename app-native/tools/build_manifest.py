@@ -22,6 +22,7 @@ RESOURCE_ATTRS = [
     ("permission",       0x01010006),
     ("hasCode",          0x0101000C),
     ("exported",         0x01010010),
+    ("process",          0x01010011),
     ("value",            0x01010024),
     ("minSdkVersion",    0x0101020C),
     ("versionCode",      0x0101021B),
@@ -39,7 +40,8 @@ strings = [x[0] for x in RESOURCE_ATTRS] + [
     "android.permission.FOREGROUND_SERVICE",
     "android.permission.FOREGROUND_SERVICE_SPECIAL_USE",
     "android.permission.SYSTEM_ALERT_WINDOW",
-    "dev.zorin.trustruntime", "5.0.2", "Zorin Trust Runtime",
+    "dev.zorin.trustruntime", "5.0.4", "Zorin Trust Runtime",
+    ":trust",
     "android.app.NativeActivity", "dev.zorin.trustruntime.TrustService",
     "android.permission.DUMP",
     "android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE",
@@ -85,6 +87,13 @@ def attr(name,value,android=True,kind='string'):
     raw,tv=typed_string(value) if kind=='string' else (typed_int(value) if kind=='int' else typed_bool(value))
     return struct.pack('<III',ns,ni,raw)+tv
 def start_tag(tag,attrs=(),line=1):
+    # aapt2 emits framework attributes in ascending resource-id order. Keep the
+    # same invariant: Android's manifest TypedArray path is built around the
+    # compiled resource IDs, and hand-authored AXML must not rely on source XML
+    # ordering. Non-android attributes (for example manifest package=) stay first.
+    rid_by_name = dict(RESOURCE_ATTRS)
+    attrs = list(attrs)
+    attrs.sort(key=lambda a: (1, rid_by_name.get(a[0], 0xffffffff)) if a[2] else (0, 0))
     body=b''.join(attr(*a) for a in attrs)
     ext=struct.pack('<IIHHHHHH',NO,idx[tag],20,20,len(attrs),0,0,0)
     size=16+len(ext)+len(body); return node_header(RES_XML_START_ELEMENT_TYPE,size,line)+ext+body
@@ -93,7 +102,7 @@ def end_tag(tag,line=1): return node_header(RES_XML_END_ELEMENT_TYPE,24,line)+st
 def build():
     c=[string_pool(),resource_map(),ns_chunk(True,1)]
     c += [
-      start_tag('manifest', [('package','dev.zorin.trustruntime',False,'string'),('versionCode',52,True,'int'),('versionName','5.0.2',True,'string')],2),
+      start_tag('manifest', [('package','dev.zorin.trustruntime',False,'string'),('versionCode',54,True,'int'),('versionName','5.0.4',True,'string')],2),
       start_tag('uses-sdk',[('minSdkVersion',29,True,'int'),('targetSdkVersion',35,True,'int')],3),end_tag('uses-sdk',3),
     ]
     for line,perm in enumerate(('android.permission.INTERNET','android.permission.FOREGROUND_SERVICE','android.permission.FOREGROUND_SERVICE_SPECIAL_USE','android.permission.SYSTEM_ALERT_WINDOW'),4):
@@ -113,6 +122,7 @@ def build():
           ('exported',True,True,'bool'),
           ('permission','android.permission.DUMP',True,'string'),
           ('stopWithTask',False,True,'bool'),
+          ('process',':trust',True,'string'),
           ('foregroundServiceType',0x40000000,True,'int'),
       ],16),
       start_tag('property',[('name','android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE',True,'string'),('value','persistent cryptographic owner-device trust over authenticated USB/ADB transport',True,'string')],17),end_tag('property',17),

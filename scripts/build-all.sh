@@ -5,5 +5,5 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 "$ROOT/app-native/build.sh"
 echo
 echo "Build complete."
-echo "APK: $ROOT/app-native/build/zorin-trust-runtime-v5.0.2.apk"
+echo "APK: $ROOT/app-native/build/zorin-trust-runtime-v5.0.3.apk"
 echo "Bridge: $ROOT/bridge/build/zorin-adb-core-*"

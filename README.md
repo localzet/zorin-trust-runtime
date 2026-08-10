@@ -2,7 +2,7 @@
 
 Native-first Android trust/runtime client. Almost the entire product lives in `libzorin_native_core.so`: NativeActivity UI, Android Keystore identity, mutual trust protocol, owner-proof broker and visual channel. Since v0.3 the APK intentionally contains one **tiny generated `classes.dex`** whose only job is to host Android's long-lived `TrustService` lifecycle; no application/business logic moved to Java/Kotlin.
 
-## v0.3.2 / Runtime 5.0.2
+## v0.3.4 / Runtime 5.0.4
 
 - `ZTRUST/2` mutual owner-workstation authentication.
 - Android Keystore EC P-256 phone identity; private key is never exported by the app.

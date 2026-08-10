@@ -660,20 +660,16 @@ static int trust_start_foreground_notification(JNIEnv* env, jobject service) {
     jmethodID cnc = nmc ? (*env)->GetMethodID(env, nmc, "createNotificationChannel", "(Landroid/app/NotificationChannel;)V") : 0;
     if (cnc && channel) (*env)->CallVoidMethod(env, nm, cnc, channel);
 
-    int icon = 0;
-    jclass rccls = (*env)->FindClass(env, "android/content/res/Resources");
-    jmethodID grs = rccls ? (*env)->GetStaticMethodID(env, rccls, "getSystem", "()Landroid/content/res/Resources;") : 0;
-    jobject res = grs ? (*env)->CallStaticObjectMethod(env, rccls, grs) : 0;
-    jmethodID gi = rccls ? (*env)->GetMethodID(env, rccls, "getIdentifier", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)I") : 0;
-    jstring iname = (*env)->NewStringUTF(env, "stat_sys_data_usb");
-    jstring dtype = (*env)->NewStringUTF(env, "drawable");
-    jstring apkg = (*env)->NewStringUTF(env, "android");
-    if (res && gi) icon = (*env)->CallIntMethod(env, res, gi, iname, dtype, apkg);
-    if (!icon) {
-        if (iname) (*env)->DeleteLocalRef(env, iname);
-        iname = (*env)->NewStringUTF(env, "stat_sys_warning");
-        if (res && gi) icon = (*env)->CallIntMethod(env, res, gi, iname, dtype, apkg);
-    }
+    // Use a stable public framework drawable directly. The previous implementation
+    // queried OEM/system resources by name; on some HyperOS builds that can yield 0,
+    // producing an invalid foreground notification and causing Android to kill the
+    // service shortly after start. android.R.drawable.ic_lock_lock = 0x0108002f.
+    int icon = 0x0108002f;
+    jclass rccls = 0;
+    jobject res = 0;
+    jstring iname = 0;
+    jstring dtype = 0;
+    jstring apkg = 0;
 
     jclass bc = (*env)->FindClass(env, "android/app/Notification$Builder");
     jmethodID bctor = bc ? (*env)->GetMethodID(env, bc, "<init>", "(Landroid/content/Context;Ljava/lang/String;)V") : 0;
@@ -753,7 +749,7 @@ static int trust_visual_show(JNIEnv* env, jobject service) {
         jfieldID grav = lpc ? (*env)->GetFieldID(env,lpc,"gravity","I") : 0;
         if(lp&&grav)(*env)->SetIntField(env,lp,grav,17);
         jclass wmc = wm ? (*env)->GetObjectClass(env,wm) : 0;
-        jmethodID add = wmc ? (*env)->GetMethodID(env,wm,"addView","(Landroid/view/View;Landroid/view/ViewGroup$LayoutParams;)V") : 0;
+        jmethodID add = wmc ? (*env)->GetMethodID(env,wmc,"addView","(Landroid/view/View;Landroid/view/ViewGroup$LayoutParams;)V") : 0;
         if(wm&&tv&&lp&&add)(*env)->CallVoidMethod(env,wm,add,tv,lp);
         if(!(*env)->ExceptionCheck(env) && wm && tv){g_visual_wm=(*env)->NewGlobalRef(env,wm);g_visual_view=(*env)->NewGlobalRef(env,tv);view=g_visual_view;}
         if((*env)->ExceptionCheck(env))(*env)->ExceptionClear(env);

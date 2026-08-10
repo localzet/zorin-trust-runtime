@@ -1,16 +1,16 @@
-Zorin Trust Runtime v0.2.2 / APK 4.2.0
+Zorin Trust Runtime 5.0.4 / suite v0.3.4
 
-Device trust survives screen lock. Sensitive owner proofs still require the phone to be unlocked. The phone identity key alias changes to v2, so the host must enroll the phone once after upgrade.
+CRASH FIX
+- Fix the exact native SIGSEGV captured on Redmi/HyperOS in TrustService.nativeOnStart.
+- trust_visual_show() created `wmc = GetObjectClass(wm)` but accidentally called GetMethodID with `wm` (jobject) instead of `wmc` (jclass).
+- The generated ARM64 machine code is regression-checked so the addView GetMethodID receives the class reference.
 
-Zorin Trust Runtime v0.1 / APK 3.0.0
+MANIFEST HARDENING
+- Compiled AndroidManifest attributes are emitted in stable framework resource-id order.
+- Build verification asserts TrustService android:process=":trust" and specialUse foreground-service type.
+- Real-device process separation still needs device confirmation via the included process check.
 
-Major change: the project now has an actual owner-workstation trust path instead of being only a system inspector.
-
-- TRUST tab with Android Keystore EC P-256 phone identity.
-- Unknown host fingerprint approval and host-key pinning.
-- Mutual signed fresh-nonce authentication with Zorin Host Agent.
-- Phone must be unlocked; disconnect revokes the live session.
-- No classes.dex; framework crypto/Keystore APIs are invoked through JNI.
-- Native Observer and authenticated ADB Shell Core v3 remain available.
-
-The companion Host Agent and AOSP Device Core are separate repositories/releases.
+SIGNING OWNERSHIP
+- Windows development bundle now signs the unsigned Runtime APK locally using a persistent owner key under LocalAppData.
+- This removes future dependence on a private signing key retained by a build/chat workspace.
+- Updating from 5.0.3 requires one final uninstall/reinstall and owner re-pair because its previous private signer is unavailable.

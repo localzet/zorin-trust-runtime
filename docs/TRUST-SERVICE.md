@@ -14,3 +14,11 @@ The DEX file is intentionally tiny and contains only the Android `Service` lifec
 - shows an ongoing Android notification while the stock runtime is active.
 
 Force Stop from Android Settings intentionally remains authoritative and is not bypassed.
+
+## Runtime 5.0.3 isolation
+
+`TrustService` runs in the private `:trust` application process. The launcher `NativeActivity`
+is disposable UI only. A failure of the long-lived service can therefore no longer tear down
+the visible Activity process, and removing the Activity from Recents does not remove the service.
+The foreground notification uses a stable public framework small-icon resource so OEM resource
+name differences cannot silently invalidate `startForeground()`.
