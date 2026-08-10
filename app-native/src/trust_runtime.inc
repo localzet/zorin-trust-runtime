@@ -1,4 +1,4 @@
-// ---- Zorin Trust Runtime v0.5: foreground TrustService + visual trust channel ----
+// ---- Zorin Trust Runtime v0.6: foreground TrustService + visual trust channel ----
 // Uses Android Keystore through JNI. A tiny DEX lifecycle shim hosts the long-lived Service;
 // all trust protocol, cryptography, policy and visual-channel logic remains native.
 // The device identity is an EC P-256 key intentionally usable while the screen is locked so
@@ -22,10 +22,16 @@ static char g_trust_policy[96] = "none";
 static volatile unsigned int g_trust_proof_count = 0;
 static volatile int g_trust_paired_hint = 0;
 static char g_trust_last_proof[128] = "NONE";
+static volatile int g_authority_pending = 0;
+static volatile int g_authority_decision = 0; /* 0 waiting, 1 approve, -1 deny */
+static char g_authority_request_id[96];
+static char g_authority_action[256];
+static char g_authority_resource[512];
+static char g_authority_prompt[384];
 static int g_trust_approve_rect[4];
 static int g_trust_forget_rect[4];
 static int g_trust_thread_started = 0;
-static char g_trust_ui_last_frame[3200];
+static char g_trust_ui_last_frame[5200];
 
 static uint16_t trust_net_u16(uint16_t v) { return (uint16_t)((v << 8) | (v >> 8)); }
 
@@ -163,7 +169,8 @@ static int trust_ui_write_file(const char* leaf,const char* data){char path[420]
 static int trust_ui_read_file(const char* leaf,char* out,int cap){char path[420];if(trust_ui_path(path,sizeof(path),leaf)!=0)return -1;return read_small(path,out,cap);}
 static int trust_ui_publish_state(void){
     if(!g_files_dir[0])return -1;
-    char sh[260],nh[260],fph[260],ih[220],pph[260],polh[220],pendingh[1100],lph[260],wire[3400],pairedbuf[512];
+    char sh[260],nh[260],fph[260],ih[220],pph[260],polh[220],pendingh[1100],lph[260];
+    char reqh[220],acth[540],resh[1060],prompth[800],wire[7600],pairedbuf[512];
     int paired=trust_pref_get("trusted_host_pub",pairedbuf,sizeof(pairedbuf))>0;
     trust_hex_encode((const uint8_t*)g_trust_status,(int)strlen(g_trust_status),sh,sizeof(sh));
     trust_hex_encode((const uint8_t*)g_trust_host_name,(int)strlen(g_trust_host_name),nh,sizeof(nh));
@@ -173,13 +180,17 @@ static int trust_ui_publish_state(void){
     trust_hex_encode((const uint8_t*)g_trust_policy,(int)strlen(g_trust_policy),polh,sizeof(polh));
     trust_hex_encode((const uint8_t*)g_trust_host_pub_pending,(int)strlen(g_trust_host_pub_pending),pendingh,sizeof(pendingh));
     trust_hex_encode((const uint8_t*)g_trust_last_proof,(int)strlen(g_trust_last_proof),lph,sizeof(lph));
-    snprintf(wire,sizeof(wire),"ZTRUSTUI/1\nSTATE %d\nSERVICE_ALIVE %d\nPAIRED %d\nPROOF_COUNT %u\nSTATUS_HEX %s\nHOST_NAME_HEX %s\nHOST_FP_HEX %s\nHOST_ID_HEX %s\nPHONE_FP_HEX %s\nPOLICY_HEX %s\nPENDING_HEX %s\nLAST_PROOF_HEX %s\nEND\n",g_trust_state,g_trust_service_alive?1:0,paired?1:0,g_trust_proof_count,sh,nh,fph,ih,pph,polh,pendingh,lph);
+    trust_hex_encode((const uint8_t*)g_authority_request_id,(int)strlen(g_authority_request_id),reqh,sizeof(reqh));
+    trust_hex_encode((const uint8_t*)g_authority_action,(int)strlen(g_authority_action),acth,sizeof(acth));
+    trust_hex_encode((const uint8_t*)g_authority_resource,(int)strlen(g_authority_resource),resh,sizeof(resh));
+    trust_hex_encode((const uint8_t*)g_authority_prompt,(int)strlen(g_authority_prompt),prompth,sizeof(prompth));
+    snprintf(wire,sizeof(wire),"ZTRUSTUI/2\nSTATE %d\nSERVICE_ALIVE %d\nPAIRED %d\nPROOF_COUNT %u\nAUTH_PENDING %d\nSTATUS_HEX %s\nHOST_NAME_HEX %s\nHOST_FP_HEX %s\nHOST_ID_HEX %s\nPHONE_FP_HEX %s\nPOLICY_HEX %s\nPENDING_HEX %s\nLAST_PROOF_HEX %s\nAUTH_REQUEST_HEX %s\nAUTH_ACTION_HEX %s\nAUTH_RESOURCE_HEX %s\nAUTH_PROMPT_HEX %s\nEND\n",g_trust_state,g_trust_service_alive?1:0,paired?1:0,g_trust_proof_count,g_authority_pending?1:0,sh,nh,fph,ih,pph,polh,pendingh,lph,reqh,acth,resh,prompth);
     return trust_ui_write_file("trust-ui-state",wire);
 }
 static long long trust_ui_parse_i64(const char* s){long long v=0;int neg=0;if(!s)return 0;if(*s=='-'){neg=1;++s;}while(*s>='0'&&*s<='9'){v=v*10+(*s-'0');++s;}return neg?-v:v;}
 static int trust_ui_decode_field(const char* frame,const char* key,char* out,int cap){char hex[1200];int n=trust_frame_field(frame,key,hex,sizeof(hex));if(n<0){if(cap)out[0]=0;return -1;}int d=trust_hex_decode(hex,(uint8_t*)out,cap-1);if(d<0){out[0]=0;return -2;}out[d]=0;return d;}
 static int trust_ui_sync_from_service(void){
-    char frame[3200],v[64];int n=trust_ui_read_file("trust-ui-state",frame,sizeof(frame));if(n<=0||!strstr(frame,"ZTRUSTUI/1"))return -1;
+    char frame[7600],v[64];int n=trust_ui_read_file("trust-ui-state",frame,sizeof(frame));if(n<=0||(!strstr(frame,"ZTRUSTUI/2")&&!strstr(frame,"ZTRUSTUI/1")))return -1;
     int changed=!g_trust_ui_last_frame[0]||!mini_streq(g_trust_ui_last_frame,frame);
     if(changed){int i=0;while(frame[i]&&i<(int)sizeof(g_trust_ui_last_frame)-1){g_trust_ui_last_frame[i]=frame[i];++i;}g_trust_ui_last_frame[i]=0;}
     if(trust_frame_field(frame,"STATE",v,sizeof(v))>=0)g_trust_state=(int)trust_ui_parse_i64(v);
@@ -194,37 +205,57 @@ static int trust_ui_sync_from_service(void){
     (void)trust_ui_decode_field(frame,"POLICY_HEX",g_trust_policy,sizeof(g_trust_policy));
     (void)trust_ui_decode_field(frame,"PENDING_HEX",g_trust_host_pub_pending,sizeof(g_trust_host_pub_pending));
     (void)trust_ui_decode_field(frame,"LAST_PROOF_HEX",g_trust_last_proof,sizeof(g_trust_last_proof));
+    if(trust_frame_field(frame,"AUTH_PENDING",v,sizeof(v))>=0)g_authority_pending=trust_ui_parse_i64(v)?1:0;
+    (void)trust_ui_decode_field(frame,"AUTH_REQUEST_HEX",g_authority_request_id,sizeof(g_authority_request_id));
+    (void)trust_ui_decode_field(frame,"AUTH_ACTION_HEX",g_authority_action,sizeof(g_authority_action));
+    (void)trust_ui_decode_field(frame,"AUTH_RESOURCE_HEX",g_authority_resource,sizeof(g_authority_resource));
+    (void)trust_ui_decode_field(frame,"AUTH_PROMPT_HEX",g_authority_prompt,sizeof(g_authority_prompt));
     return changed?1:0;
 }
 static int trust_ui_send_command(const char* command,const char* binding){
-    if(!command)return -1;char wire[900];if(binding&&*binding)snprintf(wire,sizeof(wire),"ZTRUSTUI/1\nCOMMAND %s\nBINDING %s\nEND\n",command,binding);else snprintf(wire,sizeof(wire),"ZTRUSTUI/1\nCOMMAND %s\nEND\n",command);return trust_ui_write_file("trust-ui-command",wire);
+    if(!command)return -1;char wire[900];if(binding&&*binding)snprintf(wire,sizeof(wire),"ZTRUSTUI/2\nCOMMAND %s\nBINDING %s\nEND\n",command,binding);else snprintf(wire,sizeof(wire),"ZTRUSTUI/2\nCOMMAND %s\nEND\n",command);return trust_ui_write_file("trust-ui-command",wire);
 }
 static void trust_ui_consume_command(void){
     char frame[1024],path[420],cmd[64],binding[600];int n=trust_ui_read_file("trust-ui-command",frame,sizeof(frame));if(n<=0)return;if(trust_ui_path(path,sizeof(path),"trust-ui-command")==0)(void)unlink(path);
     if(trust_frame_field(frame,"COMMAND",cmd,sizeof(cmd))<0)return;
     if(mini_streq(cmd,"FORGET")){g_trust_forget_requested=1;return;}
-    if(mini_streq(cmd,"APPROVE")){binding[0]=0;(void)trust_frame_field(frame,"BINDING",binding,sizeof(binding));if(g_trust_state==1&&g_trust_host_pub_pending[0]&&binding[0]&&mini_streq(binding,g_trust_host_pub_pending))g_trust_approve_requested=1;}
+    if(mini_streq(cmd,"APPROVE")){binding[0]=0;(void)trust_frame_field(frame,"BINDING",binding,sizeof(binding));if(g_trust_state==1&&g_trust_host_pub_pending[0]&&binding[0]&&mini_streq(binding,g_trust_host_pub_pending))g_trust_approve_requested=1;return;}
+    if(mini_streq(cmd,"AUTH_APPROVE")||mini_streq(cmd,"AUTH_DENY")){binding[0]=0;(void)trust_frame_field(frame,"BINDING",binding,sizeof(binding));if(g_authority_pending&&binding[0]&&mini_streq(binding,g_authority_request_id))g_authority_decision=mini_streq(cmd,"AUTH_APPROVE")?1:-1;return;}
 }
 
 static void trust_set_status(int state,const char* status){g_trust_state=state;if(status){int i=0;while(status[i]&&i<(int)sizeof(g_trust_status)-1){g_trust_status[i]=status[i];++i;}g_trust_status[i]=0;}trust_ui_publish_state();}
 
 static long long trust_parse_i64(const char* s){long long v=0;int neg=0;if(!s)return 0;if(*s=='-'){neg=1;++s;}while(*s>='0'&&*s<='9'){v=v*10+(*s-'0');++s;}return neg?-v:v;}
+static int trust_prefix(const char* a,const char* p){if(!a||!p)return 0;for(int i=0;p[i];++i)if(a[i]!=p[i])return 0;return 1;}
 static int trust_action_allowed(const char* a){
     if(!a||!*a)return 0;
-    const char* p1="owner.",*p2="credential.";int i=0,ok=1;for(i=0;p1[i];++i)if(a[i]!=p1[i]){ok=0;break;}if(ok)return 1;ok=1;for(i=0;p2[i];++i)if(a[i]!=p2[i]){ok=0;break;}return ok;
+    return trust_prefix(a,"owner.")||trust_prefix(a,"credential.")||trust_prefix(a,"authority.")||trust_prefix(a,"ops.");
 }
 static int trust_recv_session_message(int fd,char* out,int cap){int pos=0;out[0]=0;while(pos<cap-1){ssize_t n=recv(fd,out+pos,(size_t)(cap-1-pos),0);if(n<=0)return -1;pos+=(int)n;out[pos]=0;if(strstr(out,"PONG\n")||strstr(out,"PONG\r\n")||strstr(out,"\nEND\n")||strstr(out,"\r\nEND\r\n"))return pos;}return -2;}
+static void trust_clear_authority_request(void){g_authority_pending=0;g_authority_decision=0;g_authority_request_id[0]=0;g_authority_action[0]=0;g_authority_resource[0]=0;g_authority_prompt[0]=0;trust_ui_publish_state();}
+static void trust_copy_string(char* out,int cap,const char* in){if(!out||cap<1)return;int i=0;if(in)while(in[i]&&i<cap-1){out[i]=in[i];++i;}out[i]=0;}
 static int trust_handle_proof_request(int fd,const char* frame){
-    char ah[512],rh[1024],nonce[128],issueds[64],expiress[64];
+    char ah[512],rh[1100],ph[800],nonce[128],issueds[64],expiress[64],requestid[96],mode[32];
+    ph[0]=0;requestid[0]=0;mode[0]=0;
     if(trust_frame_field(frame,"ACTION_HEX",ah,sizeof(ah))<0||trust_frame_field(frame,"RESOURCE_HEX",rh,sizeof(rh))<0||trust_frame_field(frame,"NONCE",nonce,sizeof(nonce))<0||trust_frame_field(frame,"ISSUED",issueds,sizeof(issueds))<0||trust_frame_field(frame,"EXPIRES",expiress,sizeof(expiress))<0){trust_send_all(fd,"PROOF_RESULT DENY\nREASON malformed\nEND\n");return -1;}
-    uint8_t ab[256],rb[512];int an=trust_hex_decode(ah,ab,sizeof(ab)-1),rn=trust_hex_decode(rh,rb,sizeof(rb)-1);if(an<=0||rn<0){trust_send_all(fd,"PROOF_RESULT DENY\nREASON encoding\nEND\n");return -2;}ab[an]=0;rb[rn]=0;
+    (void)trust_frame_field(frame,"PROMPT_HEX",ph,sizeof(ph));(void)trust_frame_field(frame,"REQUEST_ID",requestid,sizeof(requestid));(void)trust_frame_field(frame,"MODE",mode,sizeof(mode));
+    uint8_t ab[256],rb[512],pb[384];int an=trust_hex_decode(ah,ab,sizeof(ab)-1),rn=trust_hex_decode(rh,rb,sizeof(rb)-1),pn=ph[0]?trust_hex_decode(ph,pb,sizeof(pb)-1):0;if(an<=0||rn<0||pn<0){trust_send_all(fd,"PROOF_RESULT DENY\nREASON encoding\nEND\n");return -2;}ab[an]=0;rb[rn]=0;if(pn>=0)pb[pn]=0;
     if(!trust_action_allowed((const char*)ab)){trust_send_all(fd,"PROOF_RESULT DENY\nREASON action-not-allowed\nEND\n");return -3;}
     long long issued=trust_parse_i64(issueds),expires=trust_parse_i64(expiress);struct timespec nowts;if(clock_gettime(0,&nowts)!=0){trust_send_all(fd,"PROOF_RESULT DENY\nREASON clock\nEND\n");return -4;}long long now=(long long)nowts.tv_sec;
     if(expires<=issued||expires-issued>120||issued<now-30||issued>now+30){trust_send_all(fd,"PROOF_RESULT DENY\nREASON ttl\nEND\n");return -5;}
-    if(trust_device_locked()){trust_send_all(fd,"PROOF_RESULT DENY\nREASON phone-locked\nEND\n");return -6;}
+    int explicit_mode=mini_streq(mode,"EXPLICIT");
+    if(explicit_mode){
+        if(!requestid[0]){trust_send_all(fd,"PROOF_RESULT DENY\nREASON missing-request-id\nEND\n");return -6;}
+        g_authority_decision=0;g_authority_pending=1;trust_copy_string(g_authority_request_id,sizeof(g_authority_request_id),requestid);trust_copy_string(g_authority_action,sizeof(g_authority_action),(const char*)ab);trust_copy_string(g_authority_resource,sizeof(g_authority_resource),(const char*)rb);trust_copy_string(g_authority_prompt,sizeof(g_authority_prompt),pn>0?(const char*)pb:(const char*)ab);trust_ui_publish_state();
+        // Wait for the Activity to write a decision into app-private IPC. The
+        // phone may initially be locked; only an explicit tap after unlock can approve.
+        int decided=0;for(int i=0;i<500&&g_running;++i){trust_ui_consume_command();if(g_authority_decision<0){decided=-1;break;}if(g_authority_decision>0&&!trust_device_locked()){decided=1;break;}usleep(100000);}
+        if(decided<0){trust_clear_authority_request();trust_send_all(fd,"PROOF_RESULT DENY\nREASON user-denied\nEND\n");return -7;}
+        if(decided==0){trust_clear_authority_request();trust_send_all(fd,"PROOF_RESULT DENY\nREASON approval-timeout\nEND\n");return -8;}
+    } else if(trust_device_locked()){trust_send_all(fd,"PROOF_RESULT DENY\nREASON phone-locked\nEND\n");return -9;}
     char msg[2600];snprintf(msg,sizeof(msg),"ZTRUST/2|OWNER_PROOF|%s|%s|%s|%s|%s|%s|%s",g_trust_host_fp,g_trust_phone_fp,ah,rh,nonce,issueds,expiress);
-    uint8_t sig[192];int slen=trust_sign((const uint8_t*)msg,(int)strlen(msg),sig,sizeof(sig));if(slen<=0){trust_send_all(fd,"PROOF_RESULT DENY\nREASON signing\nEND\n");return -7;}char sighex[512];trust_hex_encode(sig,slen,sighex,sizeof(sighex));char wire[800];snprintf(wire,sizeof(wire),"PROOF_RESULT OK\nSIGNATURE %s\nEND\n",sighex);if(trust_send_all(fd,wire)!=0)return -8;
-    ++g_trust_proof_count;snprintf(g_trust_last_proof,sizeof(g_trust_last_proof),"%s -> %.72s",(const char*)ab,(const char*)rb);trust_ui_publish_state();return 0;
+    uint8_t sig[192];int slen=trust_sign((const uint8_t*)msg,(int)strlen(msg),sig,sizeof(sig));if(slen<=0){if(explicit_mode)trust_clear_authority_request();trust_send_all(fd,"PROOF_RESULT DENY\nREASON signing\nEND\n");return -10;}char sighex[512];trust_hex_encode(sig,slen,sighex,sizeof(sighex));char wire[800];snprintf(wire,sizeof(wire),"PROOF_RESULT OK\nSIGNATURE %s\nEND\n",sighex);if(trust_send_all(fd,wire)!=0){if(explicit_mode)trust_clear_authority_request();return -11;}
+    ++g_trust_proof_count;snprintf(g_trust_last_proof,sizeof(g_trust_last_proof),"%s -> %.72s",(const char*)ab,(const char*)rb);if(explicit_mode)trust_clear_authority_request();else trust_ui_publish_state();return 0;
 }
 
 static int trust_auth_session(void){

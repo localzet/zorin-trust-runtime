@@ -40,7 +40,7 @@ strings = [x[0] for x in RESOURCE_ATTRS] + [
     "android.permission.FOREGROUND_SERVICE",
     "android.permission.FOREGROUND_SERVICE_SPECIAL_USE",
     "android.permission.SYSTEM_ALERT_WINDOW",
-    "dev.zorin.trustruntime", "7.0.0", "Zorin Trust",
+    "dev.zorin.trustruntime", "8.0.0", "Zorin Trust",
     ":trust",
     "android.app.NativeActivity", "dev.zorin.trustruntime.TrustService",
     "android.permission.DUMP",
@@ -102,7 +102,7 @@ def end_tag(tag,line=1): return node_header(RES_XML_END_ELEMENT_TYPE,24,line)+st
 def build():
     c=[string_pool(),resource_map(),ns_chunk(True,1)]
     c += [
-      start_tag('manifest', [('package','dev.zorin.trustruntime',False,'string'),('versionCode',70,True,'int'),('versionName','7.0.0',True,'string')],2),
+      start_tag('manifest', [('package','dev.zorin.trustruntime',False,'string'),('versionCode',80,True,'int'),('versionName','8.0.0',True,'string')],2),
       start_tag('uses-sdk',[('minSdkVersion',29,True,'int'),('targetSdkVersion',35,True,'int')],3),end_tag('uses-sdk',3),
     ]
     for line,perm in enumerate(('android.permission.INTERNET','android.permission.FOREGROUND_SERVICE','android.permission.FOREGROUND_SERVICE_SPECIAL_USE','android.permission.SYSTEM_ALERT_WINDOW'),4):
