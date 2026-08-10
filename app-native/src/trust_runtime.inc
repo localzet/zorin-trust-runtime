@@ -1,4 +1,4 @@
-// ---- Zorin Trust Runtime v0.6: foreground TrustService + visual trust channel ----
+// ---- Zorin Trust Runtime v0.7: foreground TrustService + visual trust channel ----
 // Uses Android Keystore through JNI. A tiny DEX lifecycle shim hosts the long-lived Service;
 // all trust protocol, cryptography, policy and visual-channel logic remains native.
 // The device identity is an EC P-256 key intentionally usable while the screen is locked so

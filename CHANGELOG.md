@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7 / Runtime 8.1.0
+- Product-version alignment for the Zorin Trust 0.7 desktop/infrastructure release.
+- Preserve the isolated `:trust` foreground process, lock-surviving device trust and ZTRUSTUI/1 approval IPC.
+- Preserve the owner-managed signing line; normal upgrades use `adb install -r` and do not re-pair the phone.
+
 ## 0.4.0 / Runtime 6.0.0
 - Visual CENTER dashboard becomes the default phone UI.
 - Native trust ring with lock-aware state.

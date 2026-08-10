@@ -1,3 +1,5 @@
-Zorin Trust Runtime 6.0.0
+Zorin Trust Runtime 8.1.0
 
-v0.4 Trust Center visual milestone. The NativeActivity now opens directly on a visual CENTER dashboard with an owner-link ring, four independent state cards (Device Trust / Owner Presence / Authority / Transport), pair-verification phrase and explicit trust/revoke controls. The foreground :trust process and ZTRUSTUI/1 IPC architecture from 5.0.5 remain intact. OWNER LINKED pulse text/visuals are refreshed.
+Runtime for the Zorin Trust 0.7 release. The Android architecture remains native-first: NativeActivity UI plus a separate :trust foreground process, ZTRUST/2 mutual trust, ZOWNER/1 bounded owner proofs and ZTRUSTUI/1 cross-process approval binding.
+
+8.1.0 is an in-place owner-signed upgrade from the current signing line. It does not require the one-time signer migration again and does not intentionally clear paired phones.
