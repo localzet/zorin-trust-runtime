@@ -243,7 +243,7 @@ static volatile AInputQueue* g_input_queue = 0;
 static volatile int g_running = 1; // trust/runtime process lifetime
 static volatile int g_ui_alive = 0; // NativeActivity instance lifetime
 static volatile unsigned int g_ui_generation = 0;
-static volatile int g_selected_tab = 0;
+static volatile int g_selected_tab = 2;
 static volatile unsigned int g_run_counter = 1;
 static volatile int g_width = 0;
 static volatile int g_height = 0;
@@ -344,6 +344,19 @@ static void fill_rect(ANativeWindow_Buffer* b, int x, int y, int w, int h, uint3
 static void outline_rect(ANativeWindow_Buffer* b, int x, int y, int w, int h, int t, uint32_t c) {
     fill_rect(b, x, y, w, t, c); fill_rect(b, x, y+h-t, w, t, c);
     fill_rect(b, x, y, t, h, c); fill_rect(b, x+w-t, y, t, h, c);
+}
+
+static void fill_circle(ANativeWindow_Buffer* b, int cx, int cy, int r, uint32_t color) {
+    if(!b||r<=0)return;
+    uint32_t* p=(uint32_t*)b->bits;
+    int r2=r*r;
+    int y0=cy-r,y1=cy+r; if(y0<0)y0=0;if(y1>=b->height)y1=b->height-1;
+    int x0=cx-r,x1=cx+r;if(x0<0)x0=0;if(x1>=b->width)x1=b->width-1;
+    for(int y=y0;y<=y1;++y){int dy=y-cy;for(int x=x0;x<=x1;++x){int dx=x-cx;if(dx*dx+dy*dy<=r2)p[y*b->stride+x]=color;}}
+}
+
+static void draw_ring(ANativeWindow_Buffer* b,int cx,int cy,int r,int thickness,uint32_t color,uint32_t inner){
+    if(thickness<1)thickness=1;fill_circle(b,cx,cy,r,color);fill_circle(b,cx,cy,r-thickness,inner);
 }
 
 static void draw_char(ANativeWindow_Buffer* b, int x, int y, char c, int scale, uint32_t color) {
@@ -737,7 +750,7 @@ static int trust_visual_show(JNIEnv* env, jobject service) {
         jclass tc = (*env)->FindClass(env, "android/widget/TextView");
         jmethodID tctor = tc ? (*env)->GetMethodID(env, tc, "<init>", "(Landroid/content/Context;)V") : 0;
         jobject tv = tctor ? (*env)->NewObject(env, tc, tctor, service) : 0;
-        jstring txt = (*env)->NewStringUTF(env, "OWNER\nTRUSTED");
+        jstring txt = (*env)->NewStringUTF(env, "ZORIN\nOWNER LINKED");
         jmethodID st = tc ? (*env)->GetMethodID(env, tc, "setText", "(Ljava/lang/CharSequence;)V") : 0;
         jmethodID stc = tc ? (*env)->GetMethodID(env, tc, "setTextColor", "(I)V") : 0;
         jmethodID sts = tc ? (*env)->GetMethodID(env, tc, "setTextSize", "(F)V") : 0;
@@ -872,32 +885,53 @@ static void section_note(ANativeWindow_Buffer* b, int* y, int x, const char* s, 
 static void fmt_int(char* out, int cap, long v) { snprintf(out,(size_t)cap,"%ld",v); }
 
 static void trust_draw_action(ANativeWindow_Buffer* b,int x,int y,int w,int h,const char* label,int rect[4],int scale,int danger) {
-    if(!b)return;uint32_t accent=danger?rgb(255,105,120):rgb(80,220,155),panel=rgb(17,35,34);fill_rect(b,x,y,w,h,panel);outline_rect(b,x,y,w,h,2,accent);int tw=text_width(label,scale);draw_text(b,x+(w-tw)/2,y+(h-7*scale)/2,label,scale,accent);rect[0]=x;rect[1]=y;rect[2]=w;rect[3]=h;
+    if(!b)return;uint32_t accent=danger?rgb(255,105,120):rgb(238,72,88),panel=danger?rgb(40,20,27):rgb(37,17,23);fill_rect(b,x,y,w,h,panel);outline_rect(b,x,y,w,h,2,accent);int tw=text_width(label,scale);draw_text(b,x+(w-tw)/2,y+(h-7*scale)/2,label,scale,accent);rect[0]=x;rect[1]=y;rect[2]=w;rect[3]=h;
+}
+
+static void trust_pair_code(const char* fp,char* out,int cap){
+    static const char* words[16]={"EMBER","FALCON","NOVA","WOLF","ORBIT","ONYX","PIXEL","RAVEN","SOLAR","TITAN","VECTOR","COMET","PULSE","ATLAS","NEXUS","VAULT"};
+    int n[8],k=0;for(int i=0;fp&&fp[i]&&k<8;++i){int v=trust_hexval(fp[i]);if(v>=0)n[k++]=v;}if(k<8){snprintf(out,(size_t)cap,"UNAVAILABLE");return;}
+    int b0=(n[0]<<4)|n[1],b1=(n[2]<<4)|n[3],b2=(n[4]<<4)|n[5],b3=(n[6]<<4)|n[7];snprintf(out,(size_t)cap,"%s-%s %02d",words[b0&15],words[b1&15],((b2<<8)|b3)%100);
+}
+
+static void trust_state_card(ANativeWindow_Buffer* b,int x,int y,int w,int h,const char* label,const char* value,int state,int scale){
+    if(!b)return;uint32_t good=rgb(238,72,88),warn=rgb(245,183,77),bad=rgb(255,90,110),dim=rgb(92,111,128),panel=rgb(14,20,28),fg=rgb(228,234,240);uint32_t c=state>0?good:(state<0?bad:warn);
+    fill_rect(b,x,y,w,h,panel);outline_rect(b,x,y,w,h,1,rgb(44,54,66));fill_rect(b,x,y,5,h,c);draw_text(b,x+14,y+10*scale,label,scale,dim);draw_text(b,x+14,y+h-13*scale,value,scale,state==0?fg:c);
 }
 
 static void render_trust(ANativeWindow_Buffer* b, int* y, int x, int scale) {
     (void)trust_ui_sync_from_service();
-    char v[256];
-    const char* st = g_trust_state==3?"TRUSTED":(g_trust_state==2?"AUTHENTICATING":(g_trust_state==1?"PENDING APPROVAL":(g_trust_state<0?"ERROR":"OFFLINE")));
-    kv(b,y,x,"STATE",st,g_trust_state==3?1:(g_trust_state<0?-1:0),scale);
-    kv(b,y,x,"STATUS",g_trust_status,g_trust_state==3?1:(g_trust_state<0?-1:0),scale);
-    kv(b,y,x,"HOST",g_trust_host_name,g_trust_state==3?1:0,scale);
-    kv(b,y,x,"HOST FP",g_trust_host_fp,g_trust_state==3?1:0,scale);
-    kv(b,y,x,"HOST KEY",g_trust_host_identity,g_trust_state==3?1:0,scale);
-    kv(b,y,x,"PHONE FP",g_trust_phone_fp,1,scale);
-    kv(b,y,x,"PHONE KEY","ANDROID KEYSTORE / EC P-256 / NON-EXPORTABLE",1,scale);
-    int locked=trust_device_locked();
-    snprintf(v,sizeof(v),"%s",locked?"LOCKED / DEVICE TRUST STAYS":"UNLOCKED / OWNER PROOFS ENABLED");kv(b,y,x,"USER PRESENCE",v,locked?0:1,scale);
-    kv(b,y,x,"POLICY",g_trust_policy,g_trust_state==3?1:0,scale);
-    snprintf(v,sizeof(v),"ZOWNER/1 / %u PROOFS",g_trust_proof_count);kv(b,y,x,"PROOF BROKER",v,g_trust_state==3?1:0,scale);
-    kv(b,y,x,"LAST PROOF",g_trust_last_proof,g_trust_proof_count?1:0,scale);
-    kv(b,y,x,"CHANNEL","ZTRUST/2 / USB ADB REVERSE / 127.0.0.1:47472",0,scale);
-    int paired=g_trust_paired_hint;kv(b,y,x,"PAIRED HOST",paired?"YES":"NO",paired?1:0,scale);
-    kv(b,y,x,"TRUST SERVICE",g_trust_service_alive?"FOREGROUND / ACTIVE":"STARTING / FALLBACK",g_trust_service_alive?1:0,scale);
-    int overlay=trust_overlay_allowed();kv(b,y,x,"RED TRUST PULSE",overlay?"ENABLED":"NEEDS OVERLAY PERMISSION",overlay?1:0,scale);
-    section_note(b,y,x,"DEVICE TRUST SURVIVES SCREEN LOCK AND UI/RECENTS; OWNER PROOFS STILL REQUIRE USER PRESENCE.",scale);
-    section_note(b,y,x,"OWNER LAPTOP AUTH TRIGGERS A SHORT RED TRUST PULSE. STOCK HYPEROS USES AN OVERLAY; SYSTEM CORE CAN LATER INTEGRATE SYSTEMUI.",scale);
-    if(b){int gap=8,w=(b->width-x-18-gap)/2,h=28*scale;if(w<80)w=80;trust_draw_action(b,x,*y,w,h,g_trust_state==1?"APPROVE HOST":"APPROVE",g_trust_approve_rect,scale,0);trust_draw_action(b,x+w+gap,*y,w,h,"FORGET HOST",g_trust_forget_rect,scale,1);*y+=h+8;int vw=b->width-x-18;trust_draw_action(b,x,*y,vw,h,overlay?"TEST RED TRUST PULSE":"ENABLE RED TRUST PULSE",g_trust_visual_rect,scale,0);*y+=h+8;}
+    int locked=trust_device_locked();int trusted=g_trust_state==3;int pending=g_trust_state==1;int overlay=trust_overlay_allowed();
+    if(g_collect_report){
+        report_kv_line("DEVICE TRUST",trusted?"ACTIVE":"INACTIVE");report_kv_line("OWNER PRESENCE",locked?"LOCKED":"PRESENT");report_kv_line("OWNER ACTIONS",trusted&&!locked?"ALLOWED":"DENIED");report_kv_line("HOST",g_trust_host_name);report_kv_line("HOST FP",g_trust_host_fp);report_kv_line("HOST KEY",g_trust_host_identity);report_kv_line("PHONE FP",g_trust_phone_fp);return;
+    }
+    if(!b)return;
+    uint32_t bg=rgb(10,17,24),red=rgb(238,72,88),redDim=rgb(87,36,45),amber=rgb(245,183,77),dim=rgb(120,139,156),fg=rgb(232,238,244);
+    int avail=b->width-x-18;int cx=x+avail/2;int r=52*scale;if(r>avail/4)r=avail/4;int cy=*y+r+8*scale;
+    draw_ring(b,cx,cy,r,7*scale,trusted?red:(pending?amber:redDim),bg);
+    if(locked&&trusted){for(int i=-r+8*scale;i<r-8*scale;i+=14*scale)fill_rect(b,cx+i,cy-r-4*scale,7*scale,4*scale,bg);}
+    const char* center=trusted?(locked?"DEVICE TRUST":"OWNER LINKED"):(pending?"PAIRING":(g_trust_state==2?"AUTHENTICATING":(g_trust_state<0?"ERROR":"OFFLINE")));
+    int tw=text_width(center,scale);draw_text(b,cx-tw/2,cy-4*scale,center,scale,trusted?red:(pending?amber:fg));
+    *y=cy+r+18*scale;
+
+    int gap=8;int cw=(avail-gap)/2;int ch=34*scale;
+    trust_state_card(b,x,*y,cw,ch,"DEVICE",trusted?"TRUSTED":"OFFLINE",trusted?1:0,scale);
+    trust_state_card(b,x+cw+gap,*y,cw,ch,"OWNER",locked?"LOCKED":"PRESENT",locked?0:1,scale);*y+=ch+gap;
+    trust_state_card(b,x,*y,cw,ch,"AUTHORITY",trusted&&!locked?"ENABLED":"SUSPENDED",trusted&&!locked?1:0,scale);
+    trust_state_card(b,x+cw+gap,*y,cw,ch,"TRANSPORT",g_trust_service_alive?"SERVICE ACTIVE":"STARTING",g_trust_service_alive?1:0,scale);*y+=ch+14;
+
+    char line[300];snprintf(line,sizeof(line),"HOST  %s",g_trust_host_name);draw_text(b,x,*y,line,scale,fg);*y+=11*scale;
+    snprintf(line,sizeof(line),"FP    %s",g_trust_host_fp);draw_text(b,x,*y,line,scale,dim);*y+=11*scale;
+    snprintf(line,sizeof(line),"KEY   %s",g_trust_host_identity);draw_text(b,x,*y,line,scale,dim);*y+=11*scale;
+    snprintf(line,sizeof(line),"POLICY %s",g_trust_policy);draw_text(b,x,*y,line,scale,dim);*y+=14*scale;
+
+    if(pending){char code[96];trust_pair_code(g_trust_host_fp,code,sizeof(code));fill_rect(b,x,*y,avail,44*scale,rgb(35,25,18));outline_rect(b,x,*y,avail,44*scale,2,amber);draw_text(b,x+12,*y+8*scale,"PAIR VERIFICATION",scale,amber);int ctw=text_width(code,scale+1);draw_text(b,cx-ctw/2,*y+24*scale,code,scale+1,fg);*y+=52*scale;}
+
+    snprintf(line,sizeof(line),"PROOF BROKER  ZOWNER/1 / %u ISSUED",g_trust_proof_count);draw_text(b,x,*y,line,scale,dim);*y+=11*scale;
+    draw_text(b,x,*y,locked?"SCREEN LOCKED: DEVICE TRUST STAYS; OWNER ACTIONS ARE BLOCKED.":"OWNER PRESENT: SENSITIVE ACTIONS MAY REQUEST A SIGNED PROOF.",scale,locked?amber:dim);*y+=17*scale;
+
+    int w=(avail-gap)/2,h=28*scale;trust_draw_action(b,x,*y,w,h,pending?"TRUST THIS WORKSTATION":"APPROVE",g_trust_approve_rect,scale,0);trust_draw_action(b,x+w+gap,*y,w,h,"REVOKE HOST",g_trust_forget_rect,scale,1);*y+=h+8;
+    trust_draw_action(b,x,*y,avail,h,overlay?"TEST OWNER LINK PULSE":"ENABLE TRUST PULSE",g_trust_visual_rect,scale,0);*y+=h+8;
 }
 
 static void render_system(ANativeWindow_Buffer* b, int* y, int x, int scale) {
@@ -1382,10 +1416,10 @@ static void build_full_report(void) {
     report_append("\n--- END ZORIN TRUST RUNTIME DIAGNOSTICS ---\n");
 }
 
-static const char* tab_names[9]={"SYSTEM","PROCESS","TRUST","CORE","BINDER","NETWORK","SECURITY","NATIVE","SANDBOX"};
+static const char* tab_names[9]={"SYSTEM","PROCESS","CENTER","CORE","BINDER","NETWORK","SECURITY","NATIVE","SANDBOX"};
 
 static void draw_button(ANativeWindow_Buffer* b, int idx, int x, int y, int w, int h, int selected, int scale) {
-    uint32_t accent=rgb(80,220,155), panel=rgb(18,28,39), panel2=rgb(25,39,52), fg=rgb(222,232,240), dim=rgb(130,151,169);
+    uint32_t accent=rgb(238,72,88), panel=rgb(18,28,39), panel2=rgb(25,39,52), fg=rgb(222,232,240), dim=rgb(130,151,169);
     fill_rect(b,x,y,w,h,selected?panel2:panel); outline_rect(b,x,y,w,h,selected?3:1,selected?accent:rgb(48,67,82));
     int tw=text_width(tab_names[idx],scale); int tx=x+(w-tw)/2; int ty=y+(h-7*scale)/2;
     draw_text(b,tx,ty,tab_names[idx],scale,selected?accent:(selected?fg:dim));
@@ -1398,13 +1432,13 @@ static void render(void) {
     ANativeWindow_setBuffersGeometry(win,0,0,WINDOW_FORMAT_RGBA_8888);
     ANativeWindow_Buffer b; if(ANativeWindow_lock(win,&b,0)!=0) return;
     g_width=b.width; g_height=b.height;
-    uint32_t bg=rgb(7,12,18), panel=rgb(14,22,31), panel2=rgb(10,17,24), fg=rgb(226,234,241), dim=rgb(125,146,164), accent=rgb(80,220,155);
+    uint32_t bg=rgb(7,12,18), panel=rgb(14,22,31), panel2=rgb(10,17,24), fg=rgb(226,234,241), dim=rgb(125,146,164), accent=rgb(238,72,88);
     fill_rect(&b,0,0,b.width,b.height,bg);
     int margin=b.width/45; if(margin<16)margin=16; if(margin>32)margin=32;
     int scale=b.width>=650?2:1; int title_scale=b.width>=650?3:2;
     int y=26;
     draw_text(&b,margin,y,"ZORIN TRUST RUNTIME",title_scale,fg);
-    char header[128]; snprintf(header,sizeof(header),"V0.3 / TRUST SERVICE / RED PULSE / ZTRUST2 / NATIVE-FIRST");
+    char header[128]; snprintf(header,sizeof(header),"V0.4 / TRUST CENTER / OWNER LINK / ZTRUST2 / NATIVE-FIRST");
     y += 11*title_scale; draw_text(&b,margin,y,header,scale,dim); y += 15*scale;
     fill_rect(&b,margin,y,b.width-2*margin,2,accent); y += 12;
 
@@ -1443,7 +1477,7 @@ static void render(void) {
     else if(g_selected_tab==7) render_native(&b,&cy,cx,scale);
     else render_sandbox(&b,&cy,cx,scale);
 
-    int foot=b.height-38*scale; if(foot>cy+10) draw_text(&b,cx,foot,"TRUST = OWNER IDENTITY + PROOF BROKER. LAB TABS REMAIN READ-ONLY.",scale,dim);
+    int foot=b.height-38*scale; if(foot>cy+10) draw_text(&b,cx,foot,"DEVICE TRUST / OWNER PRESENCE / AUTHORITY / TRANSPORT ARE SEPARATE SECURITY STATES.",scale,dim);
     ANativeWindow_unlockAndPost(win);
 }
 

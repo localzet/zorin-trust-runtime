@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0 / Runtime 6.0.0
+- Visual CENTER dashboard becomes the default phone UI.
+- Native trust ring with lock-aware state.
+- Four-state security model surfaced directly in UI.
+- Pair verification phrase derived from host fingerprint.
+- Updated OWNER LINKED pulse.
+- Preserves separate `:trust` foreground process and cross-process approval binding.
+
+# Changelog
+
 ## 0.3.5 / Runtime 5.0.5
 
 - Fix pairing after the Runtime 5.0.4 split of `NativeActivity` and `TrustService` into separate Linux processes.

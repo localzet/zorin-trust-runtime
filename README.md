@@ -1,28 +1,9 @@
 # Zorin Trust Runtime
 
-Native-first Android trust/runtime client. Almost the entire product lives in `libzorin_native_core.so`: NativeActivity UI, Android Keystore identity, mutual trust protocol, owner-proof broker and visual channel. Since v0.3 the APK intentionally contains one **tiny generated `classes.dex`** whose only job is to host Android's long-lived `TrustService` lifecycle; no application/business logic moved to Java/Kotlin.
+## v0.4 / Runtime 6.0.0
 
-## v0.3.5 / Runtime 5.0.5
+Android half of Zorin Trust Center. The trust protocol and cryptography remain native; a tiny DEX lifecycle shim hosts `TrustService` in a distinct `:trust` process. The launcher opens a visual native dashboard rather than a diagnostics-first view.
 
-- `ZTRUST/2` mutual owner-workstation authentication.
-- Android Keystore EC P-256 phone identity; private key is never exported by the app.
-- **DEVICE TRUST** survives screen lock and UI removal from Recents.
-- **USER PRESENCE** remains a separate gate for sensitive `ZOWNER/1` proofs.
-- Real foreground `TrustService`, `START_STICKY`, `stopWithTask=false`.
-- Known-host ADB reconnects bootstrap the service without opening the Activity.
-- **Trust Visual Channel:** a short red owner-trust pulse is emitted only after successful mutual authentication.
-- Stock HyperOS backend uses `TYPE_APPLICATION_OVERLAY`; custom AOSP can later integrate the same state directly into SystemUI/RRO.
-- Existing Observer/Lab diagnostics remain available as a subsystem.
-- Full future backend: AOSP Device Core + KeyMint + USB Gadget/NCM/FIDO.
+The dashboard deliberately separates Device Trust, Owner Presence, Authority and Transport. A screen lock preserves Device Trust while suspending Owner Authority. Pairing approval remains full-host-key-bound through the app-private `ZTRUSTUI/1` bridge.
 
-The desktop policy/owner session lives in the separate `zorin-host-agent` repository; server-side credential verification/issuance belongs in `zorin-access-broker`.
-
-### UI / service process boundary
-
-Because `NativeActivity` and `TrustService` are different Linux processes, they cannot share native globals. Runtime 5.0.5 uses an app-private `ZTRUSTUI/1` state/command bridge under `Context.getFilesDir()` for pairing approval and UI status. Approval is bound to the complete pending host public key, not merely a display fingerprint.
-
-## Why is there a DEX now?
-
-Android exposes `NativeActivity` but no equivalent `NativeService`. A process that only owns an Activity is not a reliable daemon lifecycle: removing the task from Recents can make the process disposable. `TrustService` is therefore a deliberately tiny Android framework adapter. The in-tree `tools/build_dex.py` deterministically emits the shim without Gradle/D8.
-
-See `docs/TRUST-SERVICE.md` and `docs/TRUST-VISUAL-CHANNEL.md`.
+See `docs/TRUST-VISUAL-CHANNEL.md`, `docs/TRUST-SERVICE.md`, and `docs/SECURITY-MODEL.md`.
