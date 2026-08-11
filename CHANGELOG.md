@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10 / Runtime 8.2.0
+- Add expiring `zorintrust://connect` transport invitations for private/link-local IPv4 endpoints.
+- Bind portable pairing to a random 128-bit invitation carried from the tokenized bootstrap URL into the first direct ZTRUST/2 client frame.
+- Keep the cryptographic `ZTRUST/2` handshake unchanged while allowing a direct-LAN stream in addition to ADB reverse.
+- Treat `portable/ephemeral` workstation keys as memory-only trust pins; they are never written to the persistent trusted-host registry.
+- Add transport state to the native Trust UI and a direct reconnect command across the existing app-private process bridge.
+- Accept `portable.*` owner-proof actions for the first portable capability flow.
+
 ## 0.7 / Runtime 8.1.0
 - Product-version alignment for the Zorin Trust 0.7 desktop/infrastructure release.
 - Preserve the isolated `:trust` foreground process, lock-surviving device trust and ZTRUSTUI/1 approval IPC.

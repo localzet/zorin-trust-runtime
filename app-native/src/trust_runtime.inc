@@ -1,9 +1,9 @@
-// ---- Zorin Trust Runtime v0.7: foreground TrustService + visual trust channel ----
+// ---- Zorin Trust Runtime 8.2.0: foreground TrustService + visual trust channel ----
 // Android Keystore используем через JNI. Крошечный DEX lifecycle-shim держит долгоживущий Service;
 // trust protocol, криптография, policy и visual-channel логика остаются native.
 // Device identity — EC P-256 ключ, который специально доступен при заблокированном экране,
 // чтобы криптографический DEVICE TRUST переживал lock. Sensitive owner proofs при lock всё равно запрещены.
-// Private key material is never exported.
+// Приватный ключ никогда не экспортируется из Android Keystore.
 #define ZORIN_TRUST_PORT 47472
 #define TRUST_ID_ALIAS "zorin_trust_device_identity_v2"
 #define TRUST_PREFS "zorin_trust_runtime"
@@ -11,14 +11,19 @@ static volatile int g_trust_state = 0;
 // 0 — offline, 1 — ждём approve, 2 — authenticating, 3 — trusted, -1 — error
 static volatile int g_trust_approve_requested = 0;
 static volatile int g_trust_forget_requested = 0;
+static volatile int g_trust_reconnect_requested = 0;
 static char g_trust_status[128] = "WAITING FOR HOST AGENT";
 static char g_trust_host_name[128] = "<NONE>";
 static char g_trust_host_fp[128] = "<NONE>";
 static char g_trust_host_identity[96] = "UNKNOWN";
 static char g_trust_host_pub_pending[512];
 static char g_trust_host_pub_current[512];
+static char g_trust_portable_host_pub[512];
+static volatile int g_trust_host_is_portable = 0;
+static volatile int g_trust_pending_is_portable = 0;
 static char g_trust_phone_fp[128] = "INITIALIZING";
 static char g_trust_policy[96] = "none";
+static char g_trust_transport[64] = "USB / ADB";
 static volatile unsigned int g_trust_proof_count = 0;
 static volatile int g_trust_paired_hint = 0;
 static char g_trust_last_proof[128] = "NONE";
@@ -33,6 +38,17 @@ static int g_trust_approve_rect[4];
 static int g_trust_forget_rect[4];
 static int g_trust_thread_started = 0;
 static char g_trust_ui_last_frame[5200];
+
+static long long trust_parse_i64(const char* s);
+static int trust_set_direct_endpoint(
+    const char* host,
+    int port,
+    long long expires,
+    const char* mode,
+    const char* invite
+);
+static void trust_clear_direct_endpoint(void);
+static int trust_ui_send_command(const char* command, const char* binding);
 static uint16_t trust_net_u16(uint16_t v) {
     return(uint16_t)((v << 8) |(v >> 8));
 }
@@ -272,6 +288,195 @@ static int trust_intent_autoconnect(void) {
 static int trust_intent_headless(void) {
     return trust_intent_bool("dev.zorin.trust.headless");
 }
+
+static int trust_apply_transport_intent(void) {
+    if (!g_activity || !g_activity->clazz) {
+        return 0;
+    }
+
+    JNIEnv* env = 0;
+    int attached = 0;
+    if (trust_attach(&env, &attached) != 0) {
+        return 0;
+    }
+
+    int result = 0;
+    jclass activity_class = (*env)->GetObjectClass(env, g_activity->clazz);
+    jmethodID get_intent = activity_class
+        ? (*env)->GetMethodID(env, activity_class, "getIntent", "()Landroid/content/Intent;")
+        : 0;
+    jobject intent = get_intent
+        ? (*env)->CallObjectMethod(env, g_activity->clazz, get_intent)
+        : 0;
+    jclass intent_class = intent ? (*env)->GetObjectClass(env, intent) : 0;
+    jmethodID get_data = intent_class
+        ? (*env)->GetMethodID(env, intent_class, "getData", "()Landroid/net/Uri;")
+        : 0;
+    jobject uri = get_data ? (*env)->CallObjectMethod(env, intent, get_data) : 0;
+    jclass uri_class = uri ? (*env)->GetObjectClass(env, uri) : 0;
+
+    jmethodID get_scheme = uri_class
+        ? (*env)->GetMethodID(env, uri_class, "getScheme", "()Ljava/lang/String;")
+        : 0;
+    jmethodID get_host = uri_class
+        ? (*env)->GetMethodID(env, uri_class, "getHost", "()Ljava/lang/String;")
+        : 0;
+    jmethodID get_query = uri_class
+        ? (*env)->GetMethodID(
+            env,
+            uri_class,
+            "getQueryParameter",
+            "(Ljava/lang/String;)Ljava/lang/String;"
+        )
+        : 0;
+
+    jstring scheme = get_scheme ? (jstring)(*env)->CallObjectMethod(env, uri, get_scheme) : 0;
+    jstring route = get_host ? (jstring)(*env)->CallObjectMethod(env, uri, get_host) : 0;
+
+    const char* scheme_text = scheme ? (*env)->GetStringUTFChars(env, scheme, 0) : 0;
+    const char* route_text = route ? (*env)->GetStringUTFChars(env, route, 0) : 0;
+
+    if (
+        scheme_text &&
+        route_text &&
+        mini_streq(scheme_text, "zorintrust") &&
+        mini_streq(route_text, "connect") &&
+        get_query
+    ) {
+        jstring host_key = (*env)->NewStringUTF(env, "host");
+        jstring port_key = (*env)->NewStringUTF(env, "port");
+        jstring expires_key = (*env)->NewStringUTF(env, "expires");
+        jstring mode_key = (*env)->NewStringUTF(env, "mode");
+        jstring invite_key = (*env)->NewStringUTF(env, "invite");
+
+        jstring host_value = host_key
+            ? (jstring)(*env)->CallObjectMethod(env, uri, get_query, host_key)
+            : 0;
+        jstring port_value = port_key
+            ? (jstring)(*env)->CallObjectMethod(env, uri, get_query, port_key)
+            : 0;
+        jstring expires_value = expires_key
+            ? (jstring)(*env)->CallObjectMethod(env, uri, get_query, expires_key)
+            : 0;
+        jstring mode_value = mode_key
+            ? (jstring)(*env)->CallObjectMethod(env, uri, get_query, mode_key)
+            : 0;
+        jstring invite_value = invite_key
+            ? (jstring)(*env)->CallObjectMethod(env, uri, get_query, invite_key)
+            : 0;
+
+        const char* host_text = host_value ? (*env)->GetStringUTFChars(env, host_value, 0) : 0;
+        const char* port_text = port_value ? (*env)->GetStringUTFChars(env, port_value, 0) : 0;
+        const char* expires_text = expires_value
+            ? (*env)->GetStringUTFChars(env, expires_value, 0)
+            : 0;
+        const char* mode_text = mode_value ? (*env)->GetStringUTFChars(env, mode_value, 0) : 0;
+        const char* invite_text = invite_value
+            ? (*env)->GetStringUTFChars(env, invite_value, 0)
+            : 0;
+
+        if (host_text && port_text && expires_text && invite_text) {
+            int port = (int)trust_parse_i64(port_text);
+            long long expires = trust_parse_i64(expires_text);
+            if (
+                trust_set_direct_endpoint(
+                    host_text,
+                    port,
+                    expires,
+                    mode_text ? mode_text : "direct",
+                    invite_text
+                ) == 0
+            ) {
+                result = 1;
+                g_trust_reconnect_requested = 1;
+                (void)trust_ui_send_command("RECONNECT", "");
+            }
+        }
+
+        if (invite_text) {
+            (*env)->ReleaseStringUTFChars(env, invite_value, invite_text);
+        }
+        if (mode_text) {
+            (*env)->ReleaseStringUTFChars(env, mode_value, mode_text);
+        }
+        if (expires_text) {
+            (*env)->ReleaseStringUTFChars(env, expires_value, expires_text);
+        }
+        if (port_text) {
+            (*env)->ReleaseStringUTFChars(env, port_value, port_text);
+        }
+        if (host_text) {
+            (*env)->ReleaseStringUTFChars(env, host_value, host_text);
+        }
+
+        if (invite_value) {
+            (*env)->DeleteLocalRef(env, invite_value);
+        }
+        if (mode_value) {
+            (*env)->DeleteLocalRef(env, mode_value);
+        }
+        if (expires_value) {
+            (*env)->DeleteLocalRef(env, expires_value);
+        }
+        if (port_value) {
+            (*env)->DeleteLocalRef(env, port_value);
+        }
+        if (host_value) {
+            (*env)->DeleteLocalRef(env, host_value);
+        }
+        if (invite_key) {
+            (*env)->DeleteLocalRef(env, invite_key);
+        }
+        if (mode_key) {
+            (*env)->DeleteLocalRef(env, mode_key);
+        }
+        if (expires_key) {
+            (*env)->DeleteLocalRef(env, expires_key);
+        }
+        if (port_key) {
+            (*env)->DeleteLocalRef(env, port_key);
+        }
+        if (host_key) {
+            (*env)->DeleteLocalRef(env, host_key);
+        }
+    }
+
+    if (route_text) {
+        (*env)->ReleaseStringUTFChars(env, route, route_text);
+    }
+    if (scheme_text) {
+        (*env)->ReleaseStringUTFChars(env, scheme, scheme_text);
+    }
+
+    if (route) {
+        (*env)->DeleteLocalRef(env, route);
+    }
+    if (scheme) {
+        (*env)->DeleteLocalRef(env, scheme);
+    }
+    if (uri_class) {
+        (*env)->DeleteLocalRef(env, uri_class);
+    }
+    if (uri) {
+        (*env)->DeleteLocalRef(env, uri);
+    }
+    if (intent_class) {
+        (*env)->DeleteLocalRef(env, intent_class);
+    }
+    if (intent) {
+        (*env)->DeleteLocalRef(env, intent);
+    }
+    if (activity_class) {
+        (*env)->DeleteLocalRef(env, activity_class);
+    }
+
+    if (trust_jni_exception(env)) {
+        result = 0;
+    }
+    trust_detach(attached);
+    return result;
+}
+
 static int trust_device_locked(void) {
     jobject ctx=runtime_context();
     if(!ctx)return 1;
@@ -652,25 +857,88 @@ static int trust_ui_read_file(const char* leaf, char* out, int cap) {
     return read_small(path, out, cap);
 }
 static int trust_ui_publish_state(void) {
-    if(!g_files_dir[0])return -1;
-    char sh[260], nh[260], fph[260], ih[220], pph[260], polh[220], pendingh[1100], lph[260];
-    char reqh[220], acth[540], resh[1060], prompth[800], wire[7600], pairedbuf[512];
-    int paired=trust_pref_get("trusted_host_pub", pairedbuf, sizeof(pairedbuf))>0;
-    trust_hex_encode((const uint8_t*)g_trust_status,(int)strlen(g_trust_status), sh, sizeof(sh));
-    trust_hex_encode((const uint8_t*)g_trust_host_name,(int)strlen(g_trust_host_name), nh, sizeof(nh));
-    trust_hex_encode((const uint8_t*)g_trust_host_fp,(int)strlen(g_trust_host_fp), fph, sizeof(fph));
-    trust_hex_encode((const uint8_t*)g_trust_host_identity,(int)strlen(g_trust_host_identity), ih, sizeof(ih));
-    trust_hex_encode((const uint8_t*)g_trust_phone_fp,(int)strlen(g_trust_phone_fp), pph, sizeof(pph));
-    trust_hex_encode((const uint8_t*)g_trust_policy,(int)strlen(g_trust_policy), polh, sizeof(polh));
-    trust_hex_encode((const uint8_t*)g_trust_host_pub_pending,(int)strlen(g_trust_host_pub_pending), pendingh, sizeof(pendingh));
-    trust_hex_encode((const uint8_t*)g_trust_last_proof,(int)strlen(g_trust_last_proof), lph, sizeof(lph));
-    trust_hex_encode((const uint8_t*)g_authority_request_id,(int)strlen(g_authority_request_id), reqh, sizeof(reqh));
-    trust_hex_encode((const uint8_t*)g_authority_action,(int)strlen(g_authority_action), acth, sizeof(acth));
-    trust_hex_encode((const uint8_t*)g_authority_resource,(int)strlen(g_authority_resource), resh, sizeof(resh));
-    trust_hex_encode((const uint8_t*)g_authority_prompt,(int)strlen(g_authority_prompt), prompth, sizeof(prompth));
-        snprintf(wire, sizeof(wire), "ZTRUSTUI/2\nSTATE %d\nSERVICE_ALIVE %d\nPAIRED %d\nPROOF_COUNT %u\nAUTH_PENDING %d\nSTATUS_HEX %s\nHOST_NAME_HEX %s\nHOST_FP_HEX %s\nHOST_ID_HEX %s\nPHONE_FP_HEX %s\nPOLICY_HEX %s\nPENDING_HEX %s\nLAST_PROOF_HEX %s\nAUTH_REQUEST_HEX %s\nAUTH_ACTION_HEX %s\nAUTH_RESOURCE_HEX %s\nAUTH_PROMPT_HEX %s\nEND\n",
-        g_trust_state, g_trust_service_alive?1:0, paired?1:0, g_trust_proof_count, g_authority_pending?1:0, sh, nh, fph,
-    ih, pph, polh, pendingh, lph, reqh, acth, resh, prompth);
+    if (!g_files_dir[0]) {
+        return -1;
+    }
+
+    char sh[260];
+    char nh[260];
+    char fph[260];
+    char ih[220];
+    char pph[260];
+    char polh[220];
+    char th[180];
+    char pendingh[1100];
+    char lph[260];
+    char reqh[220];
+    char acth[540];
+    char resh[1060];
+    char prompth[800];
+    char wire[8000];
+    char pairedbuf[512];
+
+    int paired = trust_pref_get("trusted_host_pub", pairedbuf, sizeof(pairedbuf)) > 0;
+    trust_hex_encode((const uint8_t*)g_trust_status, (int)strlen(g_trust_status), sh, sizeof(sh));
+    trust_hex_encode((const uint8_t*)g_trust_host_name, (int)strlen(g_trust_host_name), nh, sizeof(nh));
+    trust_hex_encode((const uint8_t*)g_trust_host_fp, (int)strlen(g_trust_host_fp), fph, sizeof(fph));
+    trust_hex_encode((const uint8_t*)g_trust_host_identity, (int)strlen(g_trust_host_identity), ih, sizeof(ih));
+    trust_hex_encode((const uint8_t*)g_trust_phone_fp, (int)strlen(g_trust_phone_fp), pph, sizeof(pph));
+    trust_hex_encode((const uint8_t*)g_trust_policy, (int)strlen(g_trust_policy), polh, sizeof(polh));
+    trust_hex_encode((const uint8_t*)g_trust_transport, (int)strlen(g_trust_transport), th, sizeof(th));
+    trust_hex_encode(
+        (const uint8_t*)g_trust_host_pub_pending,
+        (int)strlen(g_trust_host_pub_pending),
+        pendingh,
+        sizeof(pendingh)
+    );
+    trust_hex_encode((const uint8_t*)g_trust_last_proof, (int)strlen(g_trust_last_proof), lph, sizeof(lph));
+    trust_hex_encode((const uint8_t*)g_authority_request_id, (int)strlen(g_authority_request_id), reqh, sizeof(reqh));
+    trust_hex_encode((const uint8_t*)g_authority_action, (int)strlen(g_authority_action), acth, sizeof(acth));
+    trust_hex_encode((const uint8_t*)g_authority_resource, (int)strlen(g_authority_resource), resh, sizeof(resh));
+    trust_hex_encode((const uint8_t*)g_authority_prompt, (int)strlen(g_authority_prompt), prompth, sizeof(prompth));
+
+    snprintf(
+        wire,
+        sizeof(wire),
+        "ZTRUSTUI/2\n"
+        "STATE %d\n"
+        "SERVICE_ALIVE %d\n"
+        "PAIRED %d\n"
+        "PROOF_COUNT %u\n"
+        "AUTH_PENDING %d\n"
+        "STATUS_HEX %s\n"
+        "HOST_NAME_HEX %s\n"
+        "HOST_FP_HEX %s\n"
+        "HOST_ID_HEX %s\n"
+        "PHONE_FP_HEX %s\n"
+        "POLICY_HEX %s\n"
+        "TRANSPORT_HEX %s\n"
+        "PENDING_HEX %s\n"
+        "LAST_PROOF_HEX %s\n"
+        "AUTH_REQUEST_HEX %s\n"
+        "AUTH_ACTION_HEX %s\n"
+        "AUTH_RESOURCE_HEX %s\n"
+        "AUTH_PROMPT_HEX %s\n"
+        "END\n",
+        g_trust_state,
+        g_trust_service_alive ? 1 : 0,
+        paired ? 1 : 0,
+        g_trust_proof_count,
+        g_authority_pending ? 1 : 0,
+        sh,
+        nh,
+        fph,
+        ih,
+        pph,
+        polh,
+        th,
+        pendingh,
+        lph,
+        reqh,
+        acth,
+        resh,
+        prompth
+    );
     return trust_ui_write_file("trust-ui-state", wire);
 }
 static long long trust_ui_parse_i64(const char* s) {
@@ -725,6 +993,7 @@ static int trust_ui_sync_from_service(void) {
     (void)trust_ui_decode_field(frame, "HOST_ID_HEX", g_trust_host_identity, sizeof(g_trust_host_identity));
     (void)trust_ui_decode_field(frame, "PHONE_FP_HEX", g_trust_phone_fp, sizeof(g_trust_phone_fp));
     (void)trust_ui_decode_field(frame, "POLICY_HEX", g_trust_policy, sizeof(g_trust_policy));
+    (void)trust_ui_decode_field(frame, "TRANSPORT_HEX", g_trust_transport, sizeof(g_trust_transport));
     (void)trust_ui_decode_field(frame, "PENDING_HEX", g_trust_host_pub_pending, sizeof(g_trust_host_pub_pending));
     (void)trust_ui_decode_field(frame, "LAST_PROOF_HEX", g_trust_last_proof, sizeof(g_trust_last_proof));
     if(trust_frame_field(frame, "AUTH_PENDING", v, sizeof(v))>=0)g_authority_pending=trust_ui_parse_i64(v)?1:0;
@@ -747,6 +1016,10 @@ static void trust_ui_consume_command(void) {
     if(n<=0)return;
     if(trust_ui_path(path, sizeof(path), "trust-ui-command")==0)(void)unlink(path);
     if(trust_frame_field(frame, "COMMAND", cmd, sizeof(cmd))<0)return;
+    if (mini_streq(cmd, "RECONNECT")) {
+        g_trust_reconnect_requested = 1;
+        return;
+    }
     if(mini_streq(cmd, "FORGET")) {
         g_trust_forget_requested=1;
         return;
@@ -798,8 +1071,11 @@ static int trust_prefix(const char* a, const char* p) {
 }
 static int trust_action_allowed(const char* a) {
     if(!a||!*a)return 0;
-        return trust_prefix(a, "owner.")||trust_prefix(a, "credential.")||trust_prefix(a, "authority.")||trust_prefix(a,
-    "ops.");
+    return trust_prefix(a, "owner.") ||
+        trust_prefix(a, "credential.") ||
+        trust_prefix(a, "authority.") ||
+        trust_prefix(a, "ops.") ||
+        trust_prefix(a, "portable.");
 }
 static int trust_recv_session_message(int fd, char* out, int cap) {
     int pos=0;
@@ -937,18 +1213,282 @@ static int trust_handle_proof_request(int fd, const char* frame) {
     else trust_ui_publish_state();
     return 0;
 }
+
+static int trust_parse_ipv4_octet(const char** cursor, int* out) {
+    const char* p = *cursor;
+    int value = 0;
+    int digits = 0;
+
+    while (*p >= '0' && *p <= '9' && digits < 3) {
+        value = value * 10 + (*p - '0');
+        ++p;
+        ++digits;
+    }
+
+    if (digits == 0 || value > 255) {
+        return -1;
+    }
+
+    *cursor = p;
+    *out = value;
+    return 0;
+}
+
+static int trust_parse_private_ipv4(const char* text, uint32_t* out) {
+    if (!text || !*text || !out) {
+        return -1;
+    }
+
+    const char* p = text;
+    int octets[4] = {0, 0, 0, 0};
+    for (int i = 0; i < 4; ++i) {
+        if (trust_parse_ipv4_octet(&p, &octets[i]) != 0) {
+            return -2;
+        }
+        if (i < 3) {
+            if (*p != '.') {
+                return -3;
+            }
+            ++p;
+        }
+    }
+
+    if (*p != 0) {
+        return -4;
+    }
+
+    int is_private = 0;
+    if (octets[0] == 10) {
+        is_private = 1;
+    }
+    else if (octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31) {
+        is_private = 1;
+    }
+    else if (octets[0] == 192 && octets[1] == 168) {
+        is_private = 1;
+    }
+    else if (octets[0] == 169 && octets[1] == 254) {
+        is_private = 1;
+    }
+
+    if (!is_private) {
+        return -5;
+    }
+
+    union {
+        uint32_t value;
+        uint8_t bytes[4];
+    } address;
+
+    for (int i = 0; i < 4; ++i) {
+        address.bytes[i] = (uint8_t)octets[i];
+    }
+
+    *out = address.value;
+    return 0;
+}
+
+static void trust_clear_direct_endpoint(void) {
+    char path[420];
+    if (trust_ui_path(path, sizeof(path), "direct-transport") == 0) {
+        (void)unlink(path);
+    }
+}
+
+static int trust_valid_invite(const char* invite) {
+    if (!invite || strlen(invite) != 32) {
+        return 0;
+    }
+
+    for (int i = 0; i < 32; ++i) {
+        if (trust_hexval(invite[i]) < 0) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+static int trust_set_direct_endpoint(
+    const char* host,
+    int port,
+    long long expires,
+    const char* mode,
+    const char* invite
+) {
+    uint32_t address = 0;
+    if (trust_parse_private_ipv4(host, &address) != 0) {
+        return -1;
+    }
+    if (port < 1 || port > 65535) {
+        return -2;
+    }
+    if (!trust_valid_invite(invite)) {
+        return -3;
+    }
+
+    struct timespec now_ts;
+    if (clock_gettime(0, &now_ts) != 0) {
+        return -4;
+    }
+    long long now = (long long)now_ts.tv_sec;
+    if (expires <= now || expires > now + 3600) {
+        return -5;
+    }
+
+    char frame[384];
+    snprintf(
+        frame,
+        sizeof(frame),
+        "ZTRANSPORT/1\n"
+        "HOST %s\n"
+        "PORT %d\n"
+        "EXPIRES %lld\n"
+        "MODE %s\n"
+        "INVITE %s\n"
+        "END\n",
+        host,
+        port,
+        expires,
+        mode ? mode : "direct",
+        invite
+    );
+
+    return trust_ui_write_file("direct-transport", frame);
+}
+
+static int trust_get_endpoint(
+    uint32_t* address,
+    int* port,
+    int* is_portable,
+    char* invite,
+    int invite_cap
+) {
+    if (!address || !port || !is_portable || !invite || invite_cap < 33) {
+        return -1;
+    }
+
+    *address = 0x0100007fU;
+    *port = ZORIN_TRUST_PORT;
+    *is_portable = 0;
+    invite[0] = 0;
+    snprintf(g_trust_transport, sizeof(g_trust_transport), "USB / ADB");
+
+    char frame[512];
+    if (trust_ui_read_file("direct-transport", frame, sizeof(frame)) <= 0) {
+        return 0;
+    }
+
+    if (!strstr(frame, "ZTRANSPORT/1")) {
+        trust_clear_direct_endpoint();
+        return 0;
+    }
+
+    char host[64];
+    char port_text[16];
+    char expires_text[32];
+    char mode[32];
+    char invite_text[40];
+    if (trust_frame_field(frame, "HOST", host, sizeof(host)) < 0) {
+        trust_clear_direct_endpoint();
+        return 0;
+    }
+    if (trust_frame_field(frame, "PORT", port_text, sizeof(port_text)) < 0) {
+        trust_clear_direct_endpoint();
+        return 0;
+    }
+    if (trust_frame_field(frame, "EXPIRES", expires_text, sizeof(expires_text)) < 0) {
+        trust_clear_direct_endpoint();
+        return 0;
+    }
+    if (trust_frame_field(frame, "INVITE", invite_text, sizeof(invite_text)) < 0) {
+        trust_clear_direct_endpoint();
+        return 0;
+    }
+    if (!trust_valid_invite(invite_text)) {
+        trust_clear_direct_endpoint();
+        return 0;
+    }
+
+    long long expires = trust_parse_i64(expires_text);
+    int configured_port = (int)trust_parse_i64(port_text);
+    struct timespec now_ts;
+    if (clock_gettime(0, &now_ts) != 0) {
+        return 0;
+    }
+
+    if (expires <= (long long)now_ts.tv_sec || configured_port < 1 || configured_port > 65535) {
+        trust_clear_direct_endpoint();
+        return 0;
+    }
+
+    uint32_t configured_address = 0;
+    if (trust_parse_private_ipv4(host, &configured_address) != 0) {
+        trust_clear_direct_endpoint();
+        return 0;
+    }
+
+    mode[0] = 0;
+    (void)trust_frame_field(frame, "MODE", mode, sizeof(mode));
+
+    *address = configured_address;
+    *port = configured_port;
+    *is_portable = mini_streq(mode, "portable");
+    snprintf(invite, (size_t)invite_cap, "%s", invite_text);
+    snprintf(
+        g_trust_transport,
+        sizeof(g_trust_transport),
+        "%s",
+        *is_portable ? "DIRECT LAN / PORTABLE" : "DIRECT LAN"
+    );
+    return 1;
+}
+
 static int trust_auth_session(void) {
     int fd=socket(AF_INET, SOCK_STREAM, 0);
     if(fd<0)return -1;
     struct sockaddr_in sa;
     memset(&sa, 0, sizeof(sa));
     sa.sin_family=AF_INET;
-    sa.sin_port=trust_net_u16((uint16_t)ZORIN_TRUST_PORT);
-    sa.sin_addr.s_addr=0x0100007fU;
+    uint32_t endpoint_address = 0x0100007fU;
+    int endpoint_port = ZORIN_TRUST_PORT;
+    int endpoint_portable = 0;
+    char endpoint_invite[40];
+    int endpoint_kind = trust_get_endpoint(
+        &endpoint_address,
+        &endpoint_port,
+        &endpoint_portable,
+        endpoint_invite,
+        sizeof(endpoint_invite)
+    );
+    sa.sin_port=trust_net_u16((uint16_t)endpoint_port);
+    sa.sin_addr.s_addr=endpoint_address;
     if(connect(fd, &sa,(unsigned int)sizeof(sa))!=0) {
         close(fd);
-        return -2;
+        if (endpoint_kind <= 0) {
+            return -2;
+        }
+
+        // Если временный LAN transport уже исчез, не держим Runtime «оторванным»
+        // от обычного owner-workstation. На следующем цикле invitation ещё можно
+        // повторить, а текущий цикл сразу пробует localhost / ADB reverse.
+        fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0) {
+            return -2;
+        }
+        memset(&sa, 0, sizeof(sa));
+        sa.sin_family = AF_INET;
+        sa.sin_port = trust_net_u16((uint16_t)ZORIN_TRUST_PORT);
+        sa.sin_addr.s_addr = 0x0100007fU;
+        endpoint_portable = 0;
+        endpoint_invite[0] = 0;
+        snprintf(g_trust_transport, sizeof(g_trust_transport), "USB / ADB");
+        if (connect(fd, &sa, (unsigned int)sizeof(sa)) != 0) {
+            close(fd);
+            return -2;
+        }
     }
+    (void)endpoint_portable;
     char frame[4096], hostpub[512], hostnonce[128], hostname[128], hostidentity[96];
     if(trust_recv_frame(fd, frame, sizeof(frame))<0) {
         close(fd);
@@ -964,8 +1504,9 @@ static int trust_auth_session(void) {
         return -5;
     }
     if(trust_frame_field(frame, "HOST_NAME", hostname, sizeof(hostname))<0)snprintf(hostname, sizeof(hostname), "UNKNOWN HOST");
-        if(trust_frame_field(frame, "HOST_IDENTITY", hostidentity, sizeof(hostidentity))<0)snprintf(hostidentity, sizeof(hostidentity),
-    "UNKNOWN");
+    if(trust_frame_field(frame, "HOST_IDENTITY", hostidentity, sizeof(hostidentity))<0) {
+        snprintf(hostidentity, sizeof(hostidentity), "UNKNOWN");
+    }
     uint8_t hostder[256];
     int hostderlen=trust_hex_decode(hostpub, hostder, sizeof(hostder));
     char fp[128]="?";
@@ -977,9 +1518,17 @@ static int trust_auth_session(void) {
     snprintf(g_trust_host_fp, sizeof(g_trust_host_fp), "%s", fp);
     snprintf(g_trust_host_identity, sizeof(g_trust_host_identity), "%s", hostidentity);
     snprintf(g_trust_host_pub_current, sizeof(g_trust_host_pub_current), "%s", hostpub);
-    int same=trust_host_is_trusted(hostpub);
+    g_trust_host_is_portable = trust_prefix(hostidentity, "portable/");
+    int same = 0;
+    if (g_trust_host_is_portable && g_trust_portable_host_pub[0]) {
+        same = mini_streq(g_trust_portable_host_pub, hostpub);
+    }
+    else {
+        same = trust_host_is_trusted(hostpub);
+    }
     if(!same) {
         snprintf(g_trust_host_pub_pending, sizeof(g_trust_host_pub_pending), "%s", hostpub);
+        g_trust_pending_is_portable = g_trust_host_is_portable;
         trust_set_status(1, "UNKNOWN HOST - APPROVAL REQUIRED");
         close(fd);
         return 1001;
@@ -1015,8 +1564,38 @@ static int trust_auth_session(void) {
     trust_hex_encode(sig, slen, sighex, sizeof(sighex));
     int initial_locked=trust_device_locked();
     char wire[2300];
-        snprintf(wire, sizeof(wire), "PHONE_PUB %s\nPHONE_NONCE %s\nPHONE_SIG %s\nPHONE_STATE %s\nEND\n", phonepub, phnonce,
-    sighex, initial_locked?"LOCKED":"UNLOCKED");
+    if (endpoint_portable && endpoint_invite[0]) {
+        snprintf(
+            wire,
+            sizeof(wire),
+            "PHONE_PUB %s\n"
+            "PHONE_NONCE %s\n"
+            "PHONE_SIG %s\n"
+            "PHONE_STATE %s\n"
+            "INVITE %s\n"
+            "END\n",
+            phonepub,
+            phnonce,
+            sighex,
+            initial_locked ? "LOCKED" : "UNLOCKED",
+            endpoint_invite
+        );
+    }
+    else {
+        snprintf(
+            wire,
+            sizeof(wire),
+            "PHONE_PUB %s\n"
+            "PHONE_NONCE %s\n"
+            "PHONE_SIG %s\n"
+            "PHONE_STATE %s\n"
+            "END\n",
+            phonepub,
+            phnonce,
+            sighex,
+            initial_locked ? "LOCKED" : "UNLOCKED"
+        );
+    }
     if(trust_send_all(fd, wire)!=0) {
         close(fd);
         return -10;
@@ -1056,7 +1635,8 @@ static int trust_auth_session(void) {
     }
     snprintf(g_trust_policy, sizeof(g_trust_policy), "%s", policy);
     trust_set_status(3, "DEVICE TRUST ESTABLISHED");
-    while(g_running&&!g_trust_forget_requested) {
+    g_trust_reconnect_requested = 0;
+    while(g_running&&!g_trust_forget_requested&&!g_trust_reconnect_requested) {
         int locked=trust_device_locked();
         if(trust_send_all(fd, locked?"POLL LOCKED\n":"POLL UNLOCKED\n")!=0)break;
         char smsg[4096];
@@ -1072,7 +1652,8 @@ static int trust_auth_session(void) {
         usleep(1000000);
     }
     close(fd);
-    if(g_trust_state==3)trust_set_status(0, "USB DEVICE TRUST LOST");
+    g_trust_reconnect_requested = 0;
+    if(g_trust_state==3)trust_set_status(0, "DEVICE TRUST LOST");
     return 0;
 }
 static void* trust_worker(void* arg) {
@@ -1085,9 +1666,17 @@ static void* trust_worker(void* arg) {
     while(g_running) {
         trust_ui_consume_command();
         if(g_trust_forget_requested) {
-            if(g_trust_host_pub_current[0])(void)trust_host_remove(g_trust_host_pub_current);
+            if (g_trust_host_is_portable) {
+                g_trust_portable_host_pub[0] = 0;
+                trust_clear_direct_endpoint();
+            }
+            else if(g_trust_host_pub_current[0]) {
+                (void)trust_host_remove(g_trust_host_pub_current);
+            }
             g_trust_forget_requested=0;
             g_trust_approve_requested=0;
+            g_trust_pending_is_portable=0;
+            g_trust_host_is_portable=0;
             g_trust_host_pub_pending[0]=0;
             g_trust_host_pub_current[0]=0;
             snprintf(g_trust_host_name, sizeof(g_trust_host_name), "<NONE>");
@@ -1096,9 +1685,20 @@ static void* trust_worker(void* arg) {
             trust_set_status(0, "WORKSTATION REVOKED");
         }
         if(g_trust_state==1&&g_trust_approve_requested&&g_trust_host_pub_pending[0]) {
-            (void)trust_host_add(g_trust_host_pub_pending);
+            if (g_trust_pending_is_portable) {
+                snprintf(
+                    g_trust_portable_host_pub,
+                    sizeof(g_trust_portable_host_pub),
+                    "%s",
+                    g_trust_host_pub_pending
+                );
+            }
+            else {
+                (void)trust_host_add(g_trust_host_pub_pending);
+            }
             snprintf(g_trust_host_pub_current, sizeof(g_trust_host_pub_current), "%s", g_trust_host_pub_pending);
             g_trust_approve_requested=0;
+            g_trust_pending_is_portable=0;
             trust_set_status(0, "WORKSTATION APPROVED - AUTHENTICATING");
         }
         int rc=trust_auth_session();

@@ -1,5 +1,7 @@
-Zorin Trust Runtime 8.1.0
+Zorin Trust Runtime 8.2.0
 
-Runtime for the Zorin Trust 0.7 release. The Android architecture remains native-first: NativeActivity UI plus a separate :trust foreground process, ZTRUST/2 mutual trust, ZOWNER/1 bounded owner proofs and ZTRUSTUI/1 cross-process approval binding.
+Runtime for Zorin Trust Suite 0.10. The Android architecture remains native-first: NativeActivity UI plus a separate :trust foreground process, ZTRUST/2 mutual trust, ZOWNER/1 bounded owner proofs and ZTRUSTUI/1 cross-process approval binding.
 
-8.1.0 is an in-place owner-signed upgrade from the current signing line. It does not require the one-time signer migration again and does not intentionally clear paired phones.
+8.2.0 adds an expiring private-LAN direct transport invitation through zorintrust://connect. Portable host identities are accepted only after the normal pairing verification and are retained only in :trust process memory. The direct connection also carries an expiring 128-bit invitation token to bind the one-shot pairing window to the tokenized bootstrap URL.
+
+8.2.0 is an in-place owner-signed upgrade from the current signing line. It does not require signer migration and does not intentionally clear existing paired workstations.

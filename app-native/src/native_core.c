@@ -1,4 +1,4 @@
-// Zorin Trust Runtime v0.2.1 / Native Lab v4.1
+// Zorin Trust Runtime 8.2.0 / Native Lab v4.1
 // Native-first runtime. Маленький сгенерированный DEX держит только lifecycle TrustService; логика остаётся native.
 // Интерактивные system/process/Binder/network/security/native probes рисуем напрямую через ANativeWindow.
 // ---- примитивные типы ----
@@ -1330,96 +1330,265 @@ static void trust_pair_code(const char* fp, char* out, int cap) {
     int b0=(n[0]<<4)|n[1], b1=(n[2]<<4)|n[3], b2=(n[4]<<4)|n[5], b3=(n[6]<<4)|n[7];
     snprintf(out,(size_t)cap, "%s-%s %02d", words[b0&15], words[b1&15],((b2<<8)|b3)%100);
 }
-    static void trust_state_card(ANativeWindow_Buffer* b, int x, int y, int w, int h, const char* label, const char* value,
-int state, int scale) {
-    if(!b)return;
-        uint32_t good=rgb(238, 72, 88), warn=rgb(245, 183, 77), bad=rgb(255, 90, 110), dim=rgb(92, 111, 128), panel=rgb(14,
-    20, 28), fg=rgb(228, 234, 240);
-    uint32_t c=state>0?good:(state<0?bad:warn);
-    fill_rect(b, x, y, w, h, panel);
-    outline_rect(b, x, y, w, h, 1, rgb(44, 54, 66));
-    fill_rect(b, x, y, 5, h, c);
-    draw_text(b, x+14, y+10*scale, label, scale, dim);
-    draw_text(b, x+14, y+h-13*scale, value, scale, state==0?fg:c);
+static void trust_state_card(
+    ANativeWindow_Buffer* buffer,
+    int x,
+    int y,
+    int width,
+    int height,
+    const char* label,
+    const char* value,
+    int state,
+    int scale
+) {
+    if (!buffer) {
+        return;
+    }
+
+    uint32_t good = rgb(238, 72, 88);
+    uint32_t warn = rgb(245, 183, 77);
+    uint32_t bad = rgb(255, 90, 110);
+    uint32_t dim = rgb(92, 111, 128);
+    uint32_t panel = rgb(14, 20, 28);
+    uint32_t foreground = rgb(228, 234, 240);
+    uint32_t accent = state > 0 ? good : (state < 0 ? bad : warn);
+
+    fill_rect(buffer, x, y, width, height, panel);
+    outline_rect(buffer, x, y, width, height, 1, rgb(44, 54, 66));
+    fill_rect(buffer, x, y, 5, height, accent);
+    draw_text(buffer, x + 14, y + 10 * scale, label, scale, dim);
+    draw_text(
+        buffer,
+        x + 14,
+        y + height - 13 * scale,
+        value,
+        scale,
+        state == 0 ? foreground : accent
+    );
 }
-static void render_trust(ANativeWindow_Buffer* b, int* y, int x, int scale) {
+
+static void render_trust(ANativeWindow_Buffer* buffer, int* y, int x, int scale) {
     (void)trust_ui_sync_from_service();
-    int locked=trust_device_locked();
-    int trusted=g_trust_state==3;
-    int pending=g_trust_state==1;
-    int overlay=trust_overlay_allowed();
-    if(g_collect_report) {
-        report_kv_line("DEVICE TRUST", trusted?"ACTIVE":"INACTIVE");
-        report_kv_line("OWNER PRESENCE", locked?"LOCKED":"PRESENT");
-        report_kv_line("OWNER ACTIONS", trusted&&!locked?"ALLOWED":"DENIED");
+
+    int locked = trust_device_locked();
+    int trusted = g_trust_state == 3;
+    int pending = g_trust_state == 1;
+    int overlay = trust_overlay_allowed();
+
+    if (g_collect_report) {
+        report_kv_line("DEVICE TRUST", trusted ? "ACTIVE" : "INACTIVE");
+        report_kv_line("OWNER PRESENCE", locked ? "LOCKED" : "PRESENT");
+        report_kv_line("OWNER ACTIONS", trusted && !locked ? "ALLOWED" : "DENIED");
+        report_kv_line("TRANSPORT", g_trust_transport);
         report_kv_line("HOST", g_trust_host_name);
         report_kv_line("HOST FP", g_trust_host_fp);
         report_kv_line("HOST KEY", g_trust_host_identity);
         report_kv_line("PHONE FP", g_trust_phone_fp);
         return;
     }
-    if(!b)return;
-        uint32_t bg=rgb(10, 17, 24), red=rgb(238, 72, 88), redDim=rgb(87, 36, 45), amber=rgb(245, 183, 77), dim=rgb(120,
-    139, 156), fg=rgb(232, 238, 244);
-    int avail=b->width-x-18;
-    int cx=x+avail/2;
-    int r=52*scale;
-    if(r>avail/4)r=avail/4;
-    int cy=*y+r+8*scale;
-    draw_ring(b, cx, cy, r, 7*scale, trusted?red:(pending?amber:redDim), bg);
-    if(locked&&trusted) {
-        for(int i=-r+8*scale; i<r-8*scale; i+=14*scale)fill_rect(b, cx+i, cy-r-4*scale, 7*scale, 4*scale, bg);
+
+    if (!buffer) {
+        return;
     }
-    const char* center=trusted?(locked?"DEVICE TRUST":"OWNER LINKED"):(pending?"PAIRING":(g_trust_state==2?"AUTHENTICATING":(g_trust_state<0?"ERROR":"OFFLINE")));
-    int tw=text_width(center, scale);
-    draw_text(b, cx-tw/2, cy-4*scale, center, scale, trusted?red:(pending?amber:fg));
-    *y=cy+r+18*scale;
-    int gap=8;
-    int cw=(avail-gap)/2;
-    int ch=34*scale;
-    trust_state_card(b, x, *y, cw, ch, "DEVICE", trusted?"TRUSTED":"OFFLINE", trusted?1:0, scale);
-    trust_state_card(b, x+cw+gap, *y, cw, ch, "OWNER", locked?"LOCKED":"PRESENT", locked?0:1, scale);
-    *y+=ch+gap;
-    trust_state_card(b, x, *y, cw, ch, "AUTHORITY", trusted&&!locked?"ENABLED":"SUSPENDED", trusted&&!locked?1:0, scale);
-        trust_state_card(b, x+cw+gap, *y, cw, ch, "TRANSPORT", g_trust_service_alive?"SERVICE ACTIVE":"STARTING", g_trust_service_alive?1:0,
-    scale);
-    *y+=ch+14;
+
+    uint32_t background = rgb(10, 17, 24);
+    uint32_t red = rgb(238, 72, 88);
+    uint32_t red_dim = rgb(87, 36, 45);
+    uint32_t amber = rgb(245, 183, 77);
+    uint32_t dim = rgb(120, 139, 156);
+    uint32_t foreground = rgb(232, 238, 244);
+
+    int available = buffer->width - x - 18;
+    int center_x = x + available / 2;
+    int radius = 52 * scale;
+    if (radius > available / 4) {
+        radius = available / 4;
+    }
+
+    int center_y = *y + radius + 8 * scale;
+    draw_ring(
+        buffer,
+        center_x,
+        center_y,
+        radius,
+        7 * scale,
+        trusted ? red : (pending ? amber : red_dim),
+        background
+    );
+
+    if (locked && trusted) {
+        for (int i = -radius + 8 * scale; i < radius - 8 * scale; i += 14 * scale) {
+            fill_rect(
+                buffer,
+                center_x + i,
+                center_y - radius - 4 * scale,
+                7 * scale,
+                4 * scale,
+                background
+            );
+        }
+    }
+
+    const char* center_text = "OFFLINE";
+    if (trusted) {
+        center_text = locked ? "DEVICE TRUST" : "OWNER LINKED";
+    }
+    else if (pending) {
+        center_text = "PAIRING";
+    }
+    else if (g_trust_state == 2) {
+        center_text = "AUTHENTICATING";
+    }
+    else if (g_trust_state < 0) {
+        center_text = "ERROR";
+    }
+
+    int center_text_width = text_width(center_text, scale);
+    draw_text(
+        buffer,
+        center_x - center_text_width / 2,
+        center_y - 4 * scale,
+        center_text,
+        scale,
+        trusted ? red : (pending ? amber : foreground)
+    );
+
+    *y = center_y + radius + 18 * scale;
+    int gap = 8;
+    int card_width = (available - gap) / 2;
+    int card_height = 34 * scale;
+
+    trust_state_card(
+        buffer,
+        x,
+        *y,
+        card_width,
+        card_height,
+        "DEVICE",
+        trusted ? "TRUSTED" : "OFFLINE",
+        trusted ? 1 : 0,
+        scale
+    );
+    trust_state_card(
+        buffer,
+        x + card_width + gap,
+        *y,
+        card_width,
+        card_height,
+        "OWNER",
+        locked ? "LOCKED" : "PRESENT",
+        locked ? 0 : 1,
+        scale
+    );
+
+    *y += card_height + gap;
+    trust_state_card(
+        buffer,
+        x,
+        *y,
+        card_width,
+        card_height,
+        "AUTHORITY",
+        trusted && !locked ? "ENABLED" : "SUSPENDED",
+        trusted && !locked ? 1 : 0,
+        scale
+    );
+    trust_state_card(
+        buffer,
+        x + card_width + gap,
+        *y,
+        card_width,
+        card_height,
+        "TRANSPORT",
+        g_trust_transport,
+        g_trust_service_alive ? 1 : 0,
+        scale
+    );
+
+    *y += card_height + 14;
     char line[300];
+
     snprintf(line, sizeof(line), "HOST  %s", g_trust_host_name);
-    draw_text(b, x, *y, line, scale, fg);
-    *y+=11*scale;
+    draw_text(buffer, x, *y, line, scale, foreground);
+    *y += 11 * scale;
+
     snprintf(line, sizeof(line), "FP    %s", g_trust_host_fp);
-    draw_text(b, x, *y, line, scale, dim);
-    *y+=11*scale;
+    draw_text(buffer, x, *y, line, scale, dim);
+    *y += 11 * scale;
+
     snprintf(line, sizeof(line), "KEY   %s", g_trust_host_identity);
-    draw_text(b, x, *y, line, scale, dim);
-    *y+=11*scale;
+    draw_text(buffer, x, *y, line, scale, dim);
+    *y += 11 * scale;
+
     snprintf(line, sizeof(line), "POLICY %s", g_trust_policy);
-    draw_text(b, x, *y, line, scale, dim);
-    *y+=14*scale;
-    if(pending) {
+    draw_text(buffer, x, *y, line, scale, dim);
+    *y += 14 * scale;
+
+    if (pending) {
         char code[96];
         trust_pair_code(g_trust_host_fp, code, sizeof(code));
-        fill_rect(b, x, *y, avail, 44*scale, rgb(35, 25, 18));
-        outline_rect(b, x, *y, avail, 44*scale, 2, amber);
-        draw_text(b, x+12, *y+8*scale, "PAIR VERIFICATION", scale, amber);
-        int ctw=text_width(code, scale+1);
-        draw_text(b, cx-ctw/2, *y+24*scale, code, scale+1, fg);
-        *y+=52*scale;
+        fill_rect(buffer, x, *y, available, 44 * scale, rgb(35, 25, 18));
+        outline_rect(buffer, x, *y, available, 44 * scale, 2, amber);
+        draw_text(buffer, x + 12, *y + 8 * scale, "PAIR VERIFICATION", scale, amber);
+        int code_width = text_width(code, scale + 1);
+        draw_text(buffer, center_x - code_width / 2, *y + 24 * scale, code, scale + 1, foreground);
+        *y += 52 * scale;
     }
+
     snprintf(line, sizeof(line), "PROOF BROKER  ZOWNER/1 / %u ISSUED", g_trust_proof_count);
-    draw_text(b, x, *y, line, scale, dim);
-    *y+=11*scale;
-        draw_text(b, x, *y, locked?"SCREEN LOCKED: DEVICE TRUST STAYS; OWNER ACTIONS ARE BLOCKED.":"OWNER PRESENT: SENSITIVE ACTIONS MAY REQUEST A SIGNED PROOF.",
-    scale, locked?amber:dim);
-    *y+=17*scale;
-    int w=(avail-gap)/2, h=28*scale;
-    trust_draw_action(b, x, *y, w, h, pending?"TRUST THIS WORKSTATION":"APPROVE", g_trust_approve_rect, scale, 0);
-    trust_draw_action(b, x+w+gap, *y, w, h, "REVOKE HOST", g_trust_forget_rect, scale, 1);
-    *y+=h+8;
-        trust_draw_action(b, x, *y, avail, h, overlay?"TEST OWNER LINK PULSE":"ENABLE TRUST PULSE", g_trust_visual_rect,
-    scale, 0);
-    *y+=h+8;
+    draw_text(buffer, x, *y, line, scale, dim);
+    *y += 11 * scale;
+
+    draw_text(
+        buffer,
+        x,
+        *y,
+        locked
+            ? "SCREEN LOCKED: DEVICE TRUST STAYS; OWNER ACTIONS ARE BLOCKED."
+            : "OWNER PRESENT: SENSITIVE ACTIONS MAY REQUEST A SIGNED PROOF.",
+        scale,
+        locked ? amber : dim
+    );
+    *y += 17 * scale;
+
+    int button_width = (available - gap) / 2;
+    int button_height = 28 * scale;
+    trust_draw_action(
+        buffer,
+        x,
+        *y,
+        button_width,
+        button_height,
+        pending ? "TRUST THIS WORKSTATION" : "APPROVE",
+        g_trust_approve_rect,
+        scale,
+        0
+    );
+    trust_draw_action(
+        buffer,
+        x + button_width + gap,
+        *y,
+        button_width,
+        button_height,
+        trust_prefix(g_trust_host_identity, "portable/") ? "END PORTABLE" : "REVOKE HOST",
+        g_trust_forget_rect,
+        scale,
+        1
+    );
+    *y += button_height + 8;
+
+    trust_draw_action(
+        buffer,
+        x,
+        *y,
+        available,
+        button_height,
+        overlay ? "TEST OWNER LINK PULSE" : "ENABLE TRUST PULSE",
+        g_trust_visual_rect,
+        scale,
+        0
+    );
+    *y += button_height + 8;
 }
 static void render_system(ANativeWindow_Buffer* b, int* y, int x, int scale) {
     char v[256], v2[128], se[64];
@@ -2311,7 +2480,7 @@ static void build_full_report(void) {
     int y = 0;
     report_reset();
     char h[256];
-        snprintf(h, sizeof(h), "ZORIN TRUST RUNTIME v0.2.1 / LAB v4.1\nSDK %d | PID %d | UID %u | RUN #%u\n",(int)g_activity->sdkVersion,
+        snprintf(h, sizeof(h), "ZORIN TRUST RUNTIME 8.2.0 / LAB v4.1\nSDK %d | PID %d | UID %u | RUN #%u\n",(int)g_activity->sdkVersion,
     getpid(), getuid(), g_run_counter);
     report_append(h);
     report_append("========================================\n");
@@ -2570,6 +2739,7 @@ static void render_product_requests(ANativeWindow_Buffer* b, int* y, int x, int 
 static void render_product_devices(ANativeWindow_Buffer* b, int* y, int x, int avail, int scale) {
     (void)trust_ui_sync_from_service();
     int trusted=g_trust_state==3;
+    int portable=trust_prefix(g_trust_host_identity, "portable/");
     uint32_t fg=rgb(244, 245, 248), dim=rgb(146, 149, 160), panel=rgb(25, 27, 34), edge=rgb(46, 49, 59);
     draw_text(b, x, *y, "YOUR WORKSTATION", scale, dim);
     *y+=20*scale;
@@ -2578,11 +2748,35 @@ static void render_product_devices(ANativeWindow_Buffer* b, int* y, int x, int a
     int py=*y+16*scale;
     draw_text(b, x+16, py, g_trust_host_name[0]?g_trust_host_name:"Your workstation", scale+1, fg);
     py+=25*scale;
-    draw_text(b, x+16, py, trusted?"Connected now":"Trusted workstation", scale, trusted?rgb(238, 72, 88):dim);
+    draw_text(
+        b,
+        x+16,
+        py,
+        trusted?(portable?"Temporary portable session":"Connected now"):(portable?"Temporary workstation":"Trusted workstation"),
+        scale,
+        trusted?rgb(238, 72, 88):dim
+    );
     py+=18*scale;
-    draw_text(b, x+16, py, "Revoke only if you no longer trust this computer.", scale, dim);
+    draw_text(
+        b,
+        x+16,
+        py,
+        portable?"Portable trust is memory-only and disappears when the session ends.":"Revoke only if you no longer trust this computer.",
+        scale,
+        dim
+    );
     *y+=112*scale;
-    product_button(b, x, *y, avail, 38*scale, "REVOKE WORKSTATION", g_trust_forget_rect, scale, 1);
+    product_button(
+        b,
+        x,
+        *y,
+        avail,
+        38*scale,
+        portable?"END PORTABLE SESSION":"REVOKE WORKSTATION",
+        g_trust_forget_rect,
+        scale,
+        1
+    );
     *y+=50*scale;
 }
 static void render_product_settings(ANativeWindow_Buffer* b, int* y, int x, int avail, int scale) {
@@ -2600,7 +2794,7 @@ static void render_product_settings(ANativeWindow_Buffer* b, int* y, int x, int 
     *y+=56*scale;
     draw_text(b, x, *y, "ABOUT", scale, dim);
     *y+=20*scale;
-    draw_text(b, x, *y, "Zorin Trust 0.7", scale+1, fg);
+    draw_text(b, x, *y, "Zorin Trust Runtime 8.2.0", scale+1, fg);
     g_product_title_rect[0]=x;
     g_product_title_rect[1]=*y-6*scale;
     g_product_title_rect[2]=avail;
@@ -2685,7 +2879,7 @@ static void render(void) {
     int y=26;
     draw_text(&b, margin, y, "ZORIN TRUST RUNTIME", title_scale, fg);
     char header[128];
-    snprintf(header, sizeof(header), "V0.7 / DEVELOPER MODE / ZTRUST2 / NATIVE-FIRST");
+    snprintf(header, sizeof(header), "V8.2 / DEVELOPER MODE / ZTRUST2 / NATIVE-FIRST");
     y += 11*title_scale;
     draw_text(&b, margin, y, header, scale, dim);
     y += 15*scale;
@@ -2913,7 +3107,7 @@ static void on_input_destroyed(ANativeActivity* a, AInputQueue* q) {
 static void on_destroy(ANativeActivity* a) {
     (void)a;
     // UI одноразовый. Trust worker и application Context держим живыми, чтобы
-    // смахивание задачи не отзывает остающуюся валидной USB owner session.
+    // смахивание задачи не отзывает остающуюся валидной owner session.
     g_ui_alive=0;
     ++g_ui_generation;
     g_input_queue=0;
@@ -2927,6 +3121,7 @@ void ANativeActivity_onCreate(ANativeActivity* activity, void* savedState, size_
     g_activity=activity;
     g_vm=activity->vm;
     (void)init_runtime_context(activity);
+    (void)trust_apply_transport_intent();
     int headless=trust_intent_headless();
     // Автоматический bootstrap trusted-host прячем до установки window callbacks и отрисовки.
     if(headless) move_activity_to_back(activity);
