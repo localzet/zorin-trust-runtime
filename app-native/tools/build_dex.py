@@ -77,7 +77,7 @@ class Method:
     proto: Proto
 
 
-# One deliberately boring Java shim:
+# Один намеренно скучный Java shim:
 #
 # final class TrustService extends Service {
 #   static { System.loadLibrary("zorin_native_core"); }
@@ -131,14 +131,14 @@ ALL_TYPES = {
     C_TRUST, C_SERVICE, C_INTENT, C_IBINDER, C_SYSTEM, C_STRING, V, I
 } | {p.ret for p in ALL_PROTOS} | {x for p in ALL_PROTOS for x in p.params}
 
-# Every name/descriptor/shorty plus the one const-string payload.
+# Все name/descriptor/shorty плюс единственный const-string payload.
 STRING_SET = set(ALL_TYPES) | {m.name for m in ALL_METHODS} | {p.shorty for p in ALL_PROTOS} | {"zorin_native_core"}
 STRINGS = sorted(STRING_SET)
 S = {v: i for i, v in enumerate(STRINGS)}
 TYPES = sorted(ALL_TYPES, key=lambda x: S[x])
 T = {v: i for i, v in enumerate(TYPES)}
 
-# Proto ordering required by DEX: return type then argument type sequence.
+# Порядок proto по DEX: сначала return type, затем последовательность типов аргументов.
 PROTOS = sorted(ALL_PROTOS, key=lambda p: (T[p.ret], tuple(T[x] for x in p.params)))
 P = {v: i for i, v in enumerate(PROTOS)}
 METHODS = sorted(ALL_METHODS, key=lambda m: (T[m.cls], S[m.name], P[m.proto]))
@@ -156,12 +156,12 @@ def ins_const4(reg: int, lit: int) -> list[int]:
 
 
 def ins_invoke(op: int, method_idx: int, regs: list[int]) -> list[int]:
-    # format 35c: A=count, G in high nibble of first unit; C,D,E,F in third unit.
+    # format 35c: A=count, G в старшем nibble первой unit; C,D,E,F в третьей unit.
     assert len(regs) <= 5 and method_idx < 65536
     rr = regs + [0] * (5 - len(regs))
     c, d, e, f, g = rr[:5]
-    # DEX format 35c packs G in bits 8..11 and A (argument count) in bits 12..15.
-    # v0.3 accidentally swapped these fields, so ART decoded every invoke as A=0.
+    # DEX format 35c кладёт G в bits 8..11, а A (число аргументов) в bits 12..15.
+    # В v0.3 эти поля случайно поменялись местами, поэтому ART декодировал каждый invoke как A=0.
     first = op | ((g & 0xF) << 8) | (len(regs) << 12)
     third = (c & 0xF) | ((d & 0xF) << 4) | ((e & 0xF) << 8) | ((f & 0xF) << 12)
     return [first, method_idx, third]
@@ -184,7 +184,7 @@ def build(out_path: Path) -> None:
 
     data = bytearray()
 
-    # type_list items, deduplicated by exact parameter tuple.
+    # type_list items дедуплицируем по точному tuple параметров.
     type_list_off: dict[tuple[str, ...], int] = {}
     type_list_items = []
     for p in PROTOS:
@@ -200,7 +200,7 @@ def build(out_path: Path) -> None:
         align(data, 4)
         type_list_items.append((off, len(data) - start))
 
-    # Code items. Only non-native methods have code.
+    # Code items создаём только для non-native методов.
     code_spec: dict[Method, tuple[int, int, int, list[int]]] = {
         M_CLINIT: (1, 0, 1,
             ins_const_string(0, S["zorin_native_core"]) +
@@ -227,7 +227,7 @@ def build(out_path: Path) -> None:
         data += code_item(regs, ins, outs, units)
         code_offsets.append(off)
 
-    # class_data_item; encoded methods must be method_idx sorted inside each group.
+    # class_data_item; encoded methods внутри каждой группы должны быть отсортированы по method_idx.
     direct = [
         (M_CLINIT, ACC_STATIC | ACC_CONSTRUCTOR),
         (M_INIT, ACC_PUBLIC | ACC_CONSTRUCTOR),
@@ -262,7 +262,7 @@ def build(out_path: Path) -> None:
         b = s.encode("utf-8")  # all our strings are ASCII
         data += uleb(utf16_len(s)) + b + b"\0"
 
-    # map_list must be 4-byte aligned and includes itself.
+    # map_list должен быть выровнен на 4 байта и включает сам себя.
     align(data, 4)
     map_off = data_off + len(data)
     map_entries = [
@@ -289,7 +289,7 @@ def build(out_path: Path) -> None:
     data_size = len(data)
     file_size = data_off + data_size
 
-    # Build fixed sections with now-known offsets.
+    # Собираем fixed sections с уже известными offsets.
     fixed = bytearray(b"\0" * HEADER_SIZE)
     for off in string_data_offs:
         fixed += struct.pack("<I", off)
@@ -300,7 +300,7 @@ def build(out_path: Path) -> None:
     for m in METHODS:
         fixed += struct.pack("<HHI", T[m.cls], P[m.proto], S[m.name])
 
-    # Single TrustService class definition.
+    # Единственное определение класса TrustService.
     fixed += struct.pack(
         "<IIIIIIII",
         T[C_TRUST], ACC_PUBLIC | ACC_FINAL, T[C_SERVICE], 0,
@@ -309,7 +309,7 @@ def build(out_path: Path) -> None:
     assert len(fixed) == data_off
     dex = fixed + data
 
-    # Header (signature/checksum patched after all other bytes).
+    # Header; signature/checksum патчим после всех остальных байтов.
     struct.pack_into("8sI20s20I", dex, 0,
         DEX_MAGIC, 0, b"\0" * 20,
         file_size, HEADER_SIZE, ENDIAN_TAG, 0, 0, map_off,
@@ -333,8 +333,8 @@ def build(out_path: Path) -> None:
 
 
 def validate_invoke_encoder() -> None:
-    # Catch the exact v0.3 regression: in format 35c the argument count lives
-    # in the HIGH nibble of the first code unit, while G lives in bits 8..11.
+    # Ловим точную регрессию v0.3: в format 35c число аргументов находится
+    # в HIGH nibble первой code unit, а G находится в bits 8..11.
     cases = [
         (0x71, 7, [0]),
         (0x71, 7, [0, 1]),
@@ -367,7 +367,7 @@ def validate(path: Path) -> None:
     file_size, header_size, endian = struct.unpack_from("<III", b, 32)
     if file_size != len(b) or header_size != HEADER_SIZE or endian != ENDIAN_TAG:
         raise SystemExit("DEX header fields invalid")
-    # Ensure key class/method names are actually present as NUL-terminated data.
+    # Проверяем, что ключевые имена классов/методов реально присутствуют как NUL-terminated data.
     for needle in (b"Ldev/zorin/trustruntime/TrustService;\0", b"nativeOnStart\0", b"zorin_native_core\0"):
         if needle not in b:
             raise SystemExit(f"DEX expected string missing: {needle!r}")

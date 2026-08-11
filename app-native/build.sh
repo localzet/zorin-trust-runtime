@@ -3,15 +3,21 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BUILD="$HERE/build"
 JAVAC_BIN="$(command -v javac || true)"
-if [[ -z "$JAVAC_BIN" ]]; then echo "javac/JDK is required for JNI headers" >&2; exit 1; fi
+if [[ -z "$JAVAC_BIN" ]]; then
+  echo "javac/JDK is required for JNI headers" >&2
+  exit 1
+fi
 JAVA_HOME_RESOLVED="$(dirname "$(dirname "$(readlink -f "$JAVAC_BIN")")")"
 JNI_OS_DIR="linux"
-[[ -d "$JAVA_HOME_RESOLVED/include/$JNI_OS_DIR" ]] || { echo "JNI platform headers not found under $JAVA_HOME_RESOLVED/include" >&2; exit 1; }
+if [[ ! -d "$JAVA_HOME_RESOLVED/include/$JNI_OS_DIR" ]]; then
+    echo "JNI platform headers not found under $JAVA_HOME_RESOLVED/include" >&2
+    exit 1
+fi
 rm -rf "$BUILD/stubs" "$BUILD/lib" "$BUILD/apkroot"
 mkdir -p "$BUILD/stubs" "$BUILD/lib" "$BUILD/apkroot/lib"
 
-# These tiny libraries are LINK-TIME STUBS ONLY. They are not shipped in the APK.
-# Their SONAMEs cause the final libraries to depend on Android's real libc.so/libandroid.so.
+# Эти маленькие библиотеки нужны только как link-time stubs и в APK не попадают.
+# Их SONAME заставляет итоговые библиотеки зависеть от настоящих Android libc.so/libandroid.so.
 declare -A TARGETS=(
   [arm64-v8a]="aarch64-linux-android29"
   [armeabi-v7a]="armv7a-linux-androideabi29"
@@ -30,7 +36,13 @@ for ABI in "${!TARGETS[@]}"; do
     "$HERE/src/stub_libbinder_ndk.c" -Wl,-soname,libbinder_ndk.so -o "$BUILD/stubs/$ABI/libbinder_ndk.so"
 
   clang -target "$TARGET" -O2 -fPIC -fvisibility=hidden -fno-stack-protector \
-    -nostdlib -fuse-ld=lld -shared -I"$HERE/include" -I"$JAVA_HOME_RESOLVED/include" -I"$JAVA_HOME_RESOLVED/include/$JNI_OS_DIR" "$HERE/src/native_core.c" \
+    -nostdlib \
+    -fuse-ld=lld \
+    -shared \
+    -I"$HERE/include" \
+    -I"$JAVA_HOME_RESOLVED/include" \
+    -I"$JAVA_HOME_RESOLVED/include/$JNI_OS_DIR" \
+    "$HERE/src/native_core.c" \
     -L"$BUILD/stubs/$ABI" -Wl,--no-as-needed -l:libandroid.so -l:libbinder_ndk.so -l:libc.so \
     -Wl,-soname,libzorin_native_core.so -Wl,--build-id=sha1 -Wl,--gc-sections \
     -o "$BUILD/lib/$ABI/libzorin_native_core.so"
@@ -47,9 +59,9 @@ python3 "$HERE/tools/build_dex.py" "$BUILD/apkroot/classes.dex"
   zip -q -r "$BUILD/zorin-native-core-unsigned.apk" AndroidManifest.xml classes.dex lib
 )
 
-# Sign with APK Signature Scheme v2. The local Python signer follows the AOSP v2
-# block/digest format. Public source generates a local key under .local/ unless explicit signing paths are supplied.
-# Release signing material is intentionally not committed.
+# Подписываем через APK Signature Scheme v2. Локальный Python signer повторяет AOSP v2
+# Формат block/digest повторяет AOSP v2. Публичная сборка создаёт локальный ключ в .local/, если signing paths не переданы явно.
+# Release signing material намеренно не коммитим.
 KEY="${ZORIN_SIGNING_KEY:-$HERE/.local/signing/debug-signing-key.pem}"
 CERT="${ZORIN_SIGNING_CERT:-$HERE/.local/signing/debug-signing-cert.pem}"
 if [[ ! -f "$KEY" || ! -f "$CERT" ]]; then
@@ -60,7 +72,7 @@ python3 "$HERE/tools/apk_v2.py" sign \
   "$BUILD/zorin-trust-runtime-v8.1.0.apk" \
   --key "$KEY" --cert "$CERT"
 
-# If official Android Build Tools are installed, also verify with apksigner.
+# Если установлены официальные Android Build Tools, дополнительно проверяем APK через apksigner.
 if command -v apksigner >/dev/null 2>&1; then
   apksigner verify --verbose --print-certs "$BUILD/zorin-trust-runtime-v8.1.0.apk"
 fi
